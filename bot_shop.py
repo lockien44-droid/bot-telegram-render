@@ -26,6 +26,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(BASE_DIR, ".env"), override=True)
 from telegram import (
     Bot,
+    BotCommand,
     Update,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
@@ -1288,21 +1289,27 @@ def main_menu_keyboard() -> ReplyKeyboardMarkup:
 
 
 def welcome_text(user_fullname: str) -> str:
+    name = escape_markdown(user_fullname or "bạn", version=1)
+    shop = escape_markdown(SHOP_NAME, version=1)
     return (
-        f"👋 *Xin chào {user_fullname}!* \n\n"
-        f"*{SHOP_NAME}* rất vui được phục vụ bạn.\n\n\n"
-        "✅ Hàng số chuẩn • giao tự động 24/7\n\n"
-        "⚡️ Thanh toán nhanh • VietQR / chuyển khoản\n\n"
-        "🛡 Bảo mật riêng tư • thông tin được bảo vệ tuyệt đối\n\n\n"
+        f"👋 *Xin chào {name}!*\n\n"
+        f"*{shop}* rất vui được phục vụ bạn.\n\n"
         "📌 *Lệnh nhanh:*\n\n"
-        "/start - Menu chính\n\n"
         "/shop - Xem sản phẩm\n\n"
         "/orders - Đơn hàng của bạn\n\n"
         "/support - Hỗ trợ\n\n"
-        "/2fa - Lấy mã 2FA từ secret\n\n"
-        f"🫡 “Mỗi đơn hàng bạn đặt tại {SHOP_NAME} không chỉ là một sản phẩm — đó là sự tin tưởng bạn gửi gắm, "
-        "và là cam kết chúng tôi luôn giữ trọn.”\n\n"
+        "/2fa - Lấy mã 2FA từ secret"
     )
+
+
+async def setup_bot_commands(application: Application) -> None:
+    """Menu lệnh Telegram (gỡ /game khỏi BotFather cũ)."""
+    await application.bot.set_my_commands([
+        BotCommand("shop", "Xem sản phẩm"),
+        BotCommand("orders", "Đơn hàng của bạn"),
+        BotCommand("support", "Hỗ trợ"),
+        BotCommand("2fa", "Lấy mã 2FA từ secret"),
+    ])
 
 
 
@@ -3045,7 +3052,7 @@ def build_application() -> Application:
     except Exception as e:
         logger.error("❌ init_sheets error: %s", e)
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(setup_bot_commands).build()
     return configure_application(app)
 
 
