@@ -139,6 +139,11 @@ def invalidate_stock_cache():
     _CACHE["stock"]["ts"] = 0.0
     _CACHE["products"]["ts"] = 0.0
 
+
+def normalize_stock_code(code: Any) -> str:
+    """Chuẩn hoá mã kho (dashboard dùng upper) — tránh bot SL:0 khi POOL là SP2 mà PRODUCTS là sp2."""
+    return str(code or "").strip().upper()
+
 def _get_http_client() -> httpx.AsyncClient:
     global _http_client
     if _http_client is None or _http_client.is_closed:
@@ -769,7 +774,7 @@ def load_products() -> List[Dict[str, Any]]:
     for r in rows:
         product_id = (r.get("product_id") or "").strip()
         name = (r.get("name") or "").strip()
-        stock_code = (r.get("stock_code") or "").strip()
+        stock_code = normalize_stock_code(r.get("stock_code"))
         price = normalize_int(r.get("price"), 0)
 
         # ✅ lấy mô tả riêng từng sản phẩm (từ cột description)
@@ -791,7 +796,7 @@ def stock_count_ready_by_code() -> Dict[str, int]:
     rows = get_all_records(_ws_pool)
     cnt: Dict[str, int] = {}
     for r in rows:
-        sc = (r.get("stock_code") or "").strip()
+        sc = normalize_stock_code(r.get("stock_code"))
         st = (r.get("status") or "").strip().upper()
         if sc and st == "READY":
             cnt[sc] = cnt.get(sc, 0) + 1
@@ -804,8 +809,9 @@ async def find_product_by_id(pid: str) -> Optional[Dict[str, Any]]:
     return None
 
 async def find_product_by_stock_code(stock_code: str) -> Optional[Dict[str, Any]]:
+    want = normalize_stock_code(stock_code)
     for p in await load_products_cached():
-        if p["stock_code"] == stock_code:
+        if p["stock_code"] == want:
             return p
     return None
 
@@ -815,6 +821,7 @@ def reserve_items_from_pool(stock_code: str, qty: int, order_id: str, hold_secon
     Lấy qty item READY từ POOL theo stock_code -> set HELD + hold_order_id/hold_at/hold_expires_at
     + append RESERVATIONS
     """
+    stock_code = normalize_stock_code(stock_code)
     init_sheets()
     rows = _ws_pool.get_all_values()
     if not rows or len(rows) < 2:
@@ -840,7 +847,7 @@ def reserve_items_from_pool(stock_code: str, qty: int, order_id: str, hold_secon
         r = rows[idx - 1]
         sc = r[col_stock - 1].strip() if col_stock - 1 < len(r) else ""
         st = r[col_status - 1].strip().upper() if col_status - 1 < len(r) else ""
-        if sc == stock_code and st == "READY":
+        if normalize_stock_code(sc) == stock_code and st == "READY":
             item_id = r[col_item_id - 1].strip() if col_item_id - 1 < len(r) else ""
             secret = r[col_secret - 1].strip() if col_secret - 1 < len(r) else ""
             selected.append((idx, {"item_id": item_id, "stock_code": sc, "secret": secret}))
@@ -1684,7 +1691,7 @@ async def show_products(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
         except Exception:
             pass
-        products, stock_ready = await refresh_catalog_cache()
+        products, stock_ready = await refresh_catalog_cache(force=True)
     except Exception as e:
         logger.exception("show_products error")
         await context.bot.send_message(

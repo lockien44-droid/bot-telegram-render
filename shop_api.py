@@ -34,14 +34,15 @@ def api_products() -> Dict[str, Any]:
 @router.post("/orders")
 def api_create_order(body: CreateOrderBody) -> Dict[str, Any]:
     shop.init_sheets()
+    stock_code = shop.normalize_stock_code(body.stock_code)
     product = next(
-        (p for p in shop.load_products() if p.get("stock_code") == body.stock_code),
+        (p for p in shop.load_products() if p.get("stock_code") == stock_code),
         None,
     )
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    ready = shop.stock_count_ready_by_code().get(body.stock_code, 0)
+    ready = shop.stock_count_ready_by_code().get(stock_code, 0)
     if body.qty > ready:
         raise HTTPException(status_code=400, detail="Insufficient stock")
 
@@ -50,7 +51,7 @@ def api_create_order(body: CreateOrderBody) -> Dict[str, Any]:
     created_at = shop.now_str()
 
     reserved = shop.reserve_items_from_pool(
-        body.stock_code, body.qty, order_id, shop.ORDER_TTL_SECONDS
+        stock_code, body.qty, order_id, shop.ORDER_TTL_SECONDS
     )
     if len(reserved) < body.qty:
         raise HTTPException(status_code=400, detail="Cannot reserve stock")
@@ -58,7 +59,7 @@ def api_create_order(body: CreateOrderBody) -> Dict[str, Any]:
     shop.append_order({
         "order_id": order_id,
         "user_id": body.user_id,
-        "stock_code": body.stock_code,
+        "stock_code": stock_code,
         "qty": body.qty,
         "total": total,
         "status": "PENDING",
@@ -75,7 +76,7 @@ def api_create_order(body: CreateOrderBody) -> Dict[str, Any]:
         {
             "order_id": order_id,
             "user_id": str(body.user_id),
-            "stock_code": body.stock_code,
+            "stock_code": stock_code,
             "qty": body.qty,
             "total": total,
             "status": "PENDING",
@@ -88,7 +89,7 @@ def api_create_order(body: CreateOrderBody) -> Dict[str, Any]:
         "order": {
             "order_id": order_id,
             "user_id": str(body.user_id),
-            "stock_code": body.stock_code,
+            "stock_code": stock_code,
             "qty": body.qty,
             "total": total,
             "status": "PENDING",

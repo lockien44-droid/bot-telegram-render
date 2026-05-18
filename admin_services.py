@@ -95,7 +95,7 @@ def snapshot(limit: int = 100, pool_limit: int = 2000) -> Dict[str, Any]:
 
     stock_counts: Dict[str, Dict[str, int]] = {}
     for item in pool:
-        code = (item.get("stock_code") or "").strip()
+        code = shop.normalize_stock_code(item.get("stock_code"))
         status = (item.get("status") or "UNKNOWN").strip().upper()
         if not code:
             continue
@@ -107,7 +107,7 @@ def snapshot(limit: int = 100, pool_limit: int = 2000) -> Dict[str, Any]:
 
     product_rows = []
     for product in products:
-        code = product.get("stock_code", "")
+        code = shop.normalize_stock_code(product.get("stock_code", ""))
         counts = stock_counts.get(code, {"READY": 0, "HELD": 0, "SOLD": 0, "OTHER": 0})
         product_rows.append({
             "product_id": product.get("product_id", ""),
@@ -231,7 +231,7 @@ def add_stock(data: Dict[str, Any]) -> Dict[str, Any]:
     if not headers:
         raise RuntimeError("POOL thieu header")
 
-    stock_code = (data.get("stock_code") or "").strip()
+    stock_code = shop.normalize_stock_code(data.get("stock_code"))
     raw_items = (data.get("items") or data.get("secret") or "").strip()
     if not stock_code or not raw_items:
         raise ValueError("Can co stock_code va items")
