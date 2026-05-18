@@ -316,7 +316,7 @@ async def notify_user_start_event(
         await gs_call(
             append_dashboard_notification_simple_sync,
             "start",
-            "Khách start bot",
+            "Khách hàng",
             detail,
             "",
         )

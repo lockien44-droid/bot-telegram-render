@@ -69,8 +69,8 @@ export const NOTIFY_META: Record<
     tone: "info",
   },
   start: {
-    title: "Khách start bot",
-    description: "Vừa bấm /start",
+    title: "Khách hàng",
+    description: "Vừa bấm /start bot",
     tone: "info",
   },
 };
@@ -88,9 +88,16 @@ export interface SheetNotificationRow {
   created_at: string;
 }
 
-function normKind(t: string): NotifyKind {
-  const k = (t || "").toLowerCase();
-  if (k === "new" || k === "cancelled" || k === "expired" || k === "delivered" || k === "paid" || k === "start") {
+function normKind(t: string, message = ""): NotifyKind {
+  const k = (t || "").trim().toLowerCase();
+  if (k === "start" || k === "customer" || k === "user" || k === "user_start") {
+    return "start";
+  }
+  const m = (message || "").toLowerCase();
+  if (m.includes("khách start bot") || m.startsWith("khách hàng:")) {
+    return "start";
+  }
+  if (k === "new" || k === "cancelled" || k === "expired" || k === "delivered" || k === "paid") {
     return k;
   }
   return "new";
@@ -102,23 +109,41 @@ function parseRead(raw: string): boolean {
 }
 
 export function mapSheetNotification(row: SheetNotificationRow): OrderNotification {
-  const kind = normKind(row.type);
-  const msg = (row.message || "").trim();
-  const parts = msg.split("·").map((x) => x.trim());
+  const rawMsg = (row.message || "").trim();
+  const kind = normKind(row.type, rawMsg);
+  const meta = NOTIFY_META[kind];
+
+  let title = (row.title || "").trim() || undefined;
+  let message = rawMsg;
+  const colon = rawMsg.indexOf(":");
+  if (colon > 0 && colon < 48) {
+    const head = rawMsg.slice(0, colon).trim();
+    const rest = rawMsg.slice(colon + 1).trim();
+    if (kind === "start" || /khách/i.test(head)) {
+      title = "Khách hàng";
+      message = rest || rawMsg;
+    }
+  }
+
+  const parts = message.split("·").map((x) => x.trim());
   let stockCode = "";
   let total = "";
+  let userId = "";
   for (const p of parts) {
     if (p.startsWith("Stock:")) stockCode = p.replace(/^Stock:\s*/i, "").trim();
     if (p.startsWith("Tổng:")) total = p.replace(/^Tổng:\s*/i, "").trim();
+    if (p.startsWith("ID:")) userId = p.replace(/^ID:\s*/i, "").trim();
   }
+
   return {
     id: (row.id || "").trim() || `row_${row.created_at}`,
     kind,
-    title: (row.title || "").trim() || undefined,
-    message: msg || undefined,
+    title: title || meta.title,
+    message: message || undefined,
     orderId: (row.order_id || "").trim(),
     stockCode: stockCode || undefined,
     total: total || undefined,
+    userId: userId || undefined,
     at: (row.created_at || "").trim() || new Date().toISOString(),
     read: parseRead(row.is_read),
   };

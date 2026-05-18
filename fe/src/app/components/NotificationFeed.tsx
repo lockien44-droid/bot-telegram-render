@@ -61,14 +61,18 @@ export function NotificationFeed({
           item.message && item.message.trim()
             ? item.message.trim()
             : [item.stockCode, item.total, item.orderId].filter(Boolean).join(" · ");
+        const openOrder = item.kind !== "start" && Boolean(item.orderId);
         return (
           <button
             key={item.id}
             type="button"
-            onClick={() => onOpenOrder(item.orderId, item.status)}
-            className={`w-full text-left rounded-lg border bg-white transition-shadow hover:shadow-md ${
-              compact ? "p-3" : "p-4"
-            } ${item.read ? "border-border opacity-80" : "border-emerald-200 bg-emerald-50/40"}`}
+            onClick={() => openOrder && onOpenOrder(item.orderId, item.status)}
+            disabled={!openOrder}
+            className={`w-full text-left rounded-lg border bg-white transition-shadow ${
+              openOrder ? "hover:shadow-md cursor-pointer" : "cursor-default"
+            } ${compact ? "p-3" : "p-4"} ${
+              item.read ? "border-border opacity-80" : item.kind === "start" ? "border-sky-200 bg-sky-50/40" : "border-emerald-200 bg-emerald-50/40"
+            }`}
           >
             <div className="flex gap-2.5">
               <div
