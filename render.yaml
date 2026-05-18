@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: vm-store-bot
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt && cd fe && npm ci && npm run build
+    startCommand: python main.py
+    healthCheckPath: /ping
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: USE_BOT_API
+        value: "0"
+      - key: ORDER_TTL_SECONDS
+        value: "300"
+      - key: PORT
+        value: "10000"

@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+TaiLieu.txt
+service_account.json
+bot_tele.json
+telegram-bot-gsheet.json
+firebase*.json
+__pycache__/
+*.jpg
+*.pyc
+.venv/
+venv/
+node_modules/
+fe/node_modules/
+backups/
+*.db
