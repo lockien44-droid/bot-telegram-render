@@ -290,6 +290,41 @@ async def notify_admins_order_event(
     except Exception as e:
         logger.warning("append_dashboard_notification_row_sync failed: %s", e)
 
+
+async def notify_user_start_event(
+    context: Optional[ContextTypes.DEFAULT_TYPE],
+    user_id: int,
+    username: str = "",
+    full_name: str = "",
+) -> None:
+    """Ghi sheet notifications + Telegram admin khi khách /start bot."""
+    uname = f"@{username}" if username else "—"
+    detail = f"{full_name or '—'} ({uname}) · ID: {user_id}"
+    try:
+        await gs_call(
+            append_dashboard_notification_simple_sync,
+            "start",
+            "Khách start bot",
+            detail,
+            "",
+        )
+    except Exception as e:
+        logger.warning("notify_user_start_event sheet failed: %s", e)
+
+    if context and ADMIN_IDS:
+        name = _esc_md2(full_name or "Khách")
+        user_line = _esc_md2(uname)
+        uid = _esc_md2(user_id)
+        await notify_admins(
+            context,
+            "\n".join([
+                "👋 *Khách vừa /start bot*",
+                f"Tên: *{name}*",
+                f"User: `{user_line}`",
+                f"ID: `{uid}`",
+            ]),
+        )
+
 async def gs_call(fn, *args, **kwargs):
     if asyncio.iscoroutinefunction(fn):
         return await fn(*args, **kwargs)
@@ -1463,6 +1498,12 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         welcome_text(user.full_name),
         parse_mode="Markdown",
         reply_markup=main_menu_keyboard(),
+    )
+    await notify_user_start_event(
+        context,
+        user.id,
+        user.username or "",
+        user.full_name or "",
     )
 
 async def cmd_shop(update: Update, context: ContextTypes.DEFAULT_TYPE):

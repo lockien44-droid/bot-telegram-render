@@ -82,6 +82,8 @@ export default function App() {
             if (n.kind === "new") toast.success(meta.title, { description: desc || n.orderId, duration: 7000 });
             else if (n.kind === "cancelled" || n.kind === "expired") {
               toast.error(meta.title, { description: desc || n.orderId, duration: 7000 });
+            } else if (n.kind === "start") {
+              toast.info(meta.title, { description: desc || "Khách mới", duration: 7000 });
             } else {
               toast(meta.title, { description: desc || n.orderId, duration: 7000 });
             }

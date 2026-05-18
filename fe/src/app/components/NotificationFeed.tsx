@@ -1,4 +1,4 @@
-import { Bell, BellOff, PackageCheck, PackagePlus, PackageX, Clock, Banknote } from "lucide-react";
+import { Bell, BellOff, PackageCheck, PackagePlus, PackageX, Clock, Banknote, UserPlus } from "lucide-react";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { NOTIFY_META, type NotifyKind, type OrderNotification } from "../notifications";
@@ -9,6 +9,7 @@ const KIND_ICON: Record<NotifyKind, React.ReactNode> = {
   expired: <Clock size={16} className="text-amber-600" />,
   delivered: <PackageCheck size={16} className="text-blue-600" />,
   paid: <Banknote size={16} className="text-violet-600" />,
+  start: <UserPlus size={16} className="text-sky-600" />,
 };
 
 function formatTime(iso: string) {

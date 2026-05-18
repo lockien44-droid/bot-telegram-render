@@ -1,6 +1,6 @@
 import { money, text } from "./api";
 
-export type NotifyKind = "new" | "cancelled" | "expired" | "delivered" | "paid";
+export type NotifyKind = "new" | "cancelled" | "expired" | "delivered" | "paid" | "start";
 
 export interface OrderNotification {
   id: string;
@@ -68,6 +68,11 @@ export const NOTIFY_META: Record<
     description: "Tiền đã về, chờ giao / lỗi kho",
     tone: "info",
   },
+  start: {
+    title: "Khách start bot",
+    description: "Vừa bấm /start",
+    tone: "info",
+  },
 };
 
 export const MAX_NOTIFICATIONS = 500;
@@ -85,7 +90,7 @@ export interface SheetNotificationRow {
 
 function normKind(t: string): NotifyKind {
   const k = (t || "").toLowerCase();
-  if (k === "new" || k === "cancelled" || k === "expired" || k === "delivered" || k === "paid") {
+  if (k === "new" || k === "cancelled" || k === "expired" || k === "delivered" || k === "paid" || k === "start") {
     return k;
   }
   return "new";
