@@ -221,10 +221,19 @@ def money_vnd(value: Any) -> str:
     return f"{normalize_int(value, 0):,}".replace(",", ".") + "đ"
 
 
-async def notify_admins(context: ContextTypes.DEFAULT_TYPE, text: str, reply_markup=None) -> None:
+async def notify_admins(
+    context: ContextTypes.DEFAULT_TYPE,
+    text: str,
+    reply_markup=None,
+    *,
+    exclude_chat_ids: Optional[set[int]] = None,
+) -> None:
     if not ADMIN_IDS:
         return
+    skip = exclude_chat_ids or set()
     for admin_id in ADMIN_IDS:
+        if admin_id in skip:
+            continue
         try:
             await context.bot.send_message(
                 chat_id=admin_id,
@@ -297,7 +306,10 @@ async def notify_user_start_event(
     username: str = "",
     full_name: str = "",
 ) -> None:
-    """Ghi sheet notifications + Telegram admin khi khách /start bot."""
+    """Ghi sheet (dashboard admin) + Telegram chỉ tới ADMIN_IDS (không gửi cho khách)."""
+    if user_id in ADMIN_IDS:
+        return
+
     uname = f"@{username}" if username else "—"
     detail = f"{full_name or '—'} ({uname}) · ID: {user_id}"
     try:
@@ -323,6 +335,7 @@ async def notify_user_start_event(
                 f"User: `{user_line}`",
                 f"ID: `{uid}`",
             ]),
+            exclude_chat_ids={user_id},
         )
 
 async def gs_call(fn, *args, **kwargs):
