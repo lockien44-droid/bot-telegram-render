@@ -16,6 +16,7 @@ interface Props {
   adminKey: string;
   refresh: () => Promise<void>;
   preset?: { status?: string; stockCode?: string; nonce: number };
+  embedded?: boolean;
 }
 
 const normalizeCode = (value: any) => text(value).trim().toUpperCase();
@@ -39,7 +40,7 @@ function countByStatus(items: AnyRow[]) {
   return counts;
 }
 
-export function Inventory({ data, adminKey, refresh, preset }: Props) {
+export function Inventory({ data, adminKey, refresh, preset, embedded }: Props) {
   const [addCode, setAddCode] = useState("");
   const [addData, setAddData] = useState("");
   const [filterStatus, setFilterStatus] = useState("ALL");
@@ -182,7 +183,7 @@ export function Inventory({ data, adminKey, refresh, preset }: Props) {
 
   return (
     <div className="space-y-4">
-      <h2 className="flex items-center gap-2"><Warehouse size={20} /> Kho hàng</h2>
+      {!embedded && <h2 className="flex items-center gap-2"><Warehouse size={20} /> Kho hàng</h2>}
 
       <div className="grid grid-cols-3 gap-3">
         {(["READY", "HELD", "SOLD"] as const).map((s) => (

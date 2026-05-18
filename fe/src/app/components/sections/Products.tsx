@@ -13,11 +13,12 @@ interface Props {
   data: AdminSnapshot | null;
   adminKey: string;
   refresh: () => Promise<void>;
+  embedded?: boolean;
 }
 
 const EMPTY = { product_id: "", name: "", stock_code: "", price: "", description: "" };
 
-export function Products({ data, adminKey, refresh }: Props) {
+export function Products({ data, adminKey, refresh, embedded }: Props) {
   const [modalOpen, setModalOpen] = useState(false);
   const [form, setForm] = useState({ ...EMPTY });
   const [saving, setSaving] = useState(false);
@@ -49,8 +50,8 @@ export function Products({ data, adminKey, refresh }: Props) {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-2">
-        <h2 className="flex items-center gap-2"><Package size={20} /> Sản phẩm</h2>
+      <div className={`flex items-center gap-2 ${embedded ? "justify-end" : "justify-between"}`}>
+        {!embedded && <h2 className="flex items-center gap-2"><Package size={20} /> Sản phẩm</h2>}
         <Button size="sm" className="gap-1.5" onClick={openAdd}><Plus size={15} /> Thêm sản phẩm</Button>
       </div>
 

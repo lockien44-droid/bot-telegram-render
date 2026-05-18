@@ -4,8 +4,7 @@ import { toast, Toaster } from "sonner";
 import { AdminLogin } from "./components/AdminLogin";
 import { NAV_ITEMS, Sidebar, type AdminSection } from "./components/Sidebar";
 import { Overview } from "./components/sections/Overview";
-import { Products } from "./components/sections/Products";
-import { Inventory } from "./components/sections/Inventory";
+import { Catalog } from "./components/sections/Catalog";
 import { Orders } from "./components/sections/Orders";
 import { Users } from "./components/sections/Users";
 import { Reservations } from "./components/sections/Reservations";
@@ -210,7 +209,7 @@ export default function App() {
             }}
             onOpenInventory={(status, stockCode) => {
               setInventoryPreset({ status, stockCode, nonce: Date.now() });
-              setSection("inventory");
+              setSection("catalog");
             }}
             onOpenUsers={() => setSection("users")}
             onOpenNotifications={() => setSection("notifications")}
@@ -236,10 +235,8 @@ export default function App() {
             }}
           />
         );
-      case "products":
-        return <Products {...common} />;
-      case "inventory":
-        return <Inventory {...common} preset={inventoryPreset} />;
+      case "catalog":
+        return <Catalog {...common} preset={inventoryPreset} />;
       case "orders":
         return <Orders {...common} preset={orderPreset} />;
       case "users":
