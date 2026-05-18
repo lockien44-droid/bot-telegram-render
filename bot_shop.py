@@ -598,6 +598,20 @@ def headers_map(ws) -> Dict[str, int]:
     return {str(h).strip().lower(): i for i, h in enumerate(headers, start=1)}
 
 
+def get_all_records(ws) -> List[Dict[str, str]]:
+    values = ws.get_all_values()
+    if not values or len(values) < 2:
+        return []
+    headers = [str(h).strip() for h in values[0]]
+    rows: List[Dict[str, str]] = []
+    for r in values[1:]:
+        d: Dict[str, str] = {}
+        for i, h in enumerate(headers):
+            d[h] = r[i].strip() if i < len(r) else ""
+        rows.append(d)
+    return rows
+
+
 NOTIF_HEADERS = ["id", "type", "message", "order_id", "is_read", "created_at"]
 
 
