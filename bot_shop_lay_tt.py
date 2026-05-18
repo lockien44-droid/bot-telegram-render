@@ -381,13 +381,10 @@ async def get_fulfillment_secrets(order_id: str) -> List[str]: return []
 BTN_PRODUCTS = "🛍 Sản phẩm".replace("\ufe0f","")
 BTN_SUPPORT  = "💬 Hỗ trợ".replace("\ufe0f","")
 BTN_ORDERS   = "📦 Đơn hàng".replace("\ufe0f","")
-BTN_GAME     = "🎲 Game".replace("\ufe0f","")
-
-
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
     kb = [
         [KeyboardButton(BTN_PRODUCTS), KeyboardButton(BTN_SUPPORT)],
-        [KeyboardButton(BTN_GAME), KeyboardButton(BTN_ORDERS)],
+        [KeyboardButton(BTN_ORDERS)],
     ]
     return ReplyKeyboardMarkup(kb, resize_keyboard=True)
 
@@ -550,16 +547,6 @@ async def cmd_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_support(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_support(update.effective_user.id, context)
-
-async def cmd_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🎲 *GAME*\n\n"
-        
-        "Tính năng này sẽ được cập nhật sớm.\n\n"
-        "👉 Hiện tại bạn bấm 🛍 *Sản phẩm* để mua nhé.",
-        parse_mode="Markdown",
-        reply_markup=main_menu_keyboard(),
-    )
 
 # ================== PRODUCTS FLOW ==================
 async def show_products(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
@@ -1484,8 +1471,6 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await send_support(user.id, context)
     if text == BTN_ORDERS:
         return await show_orders(user.id, context)
-    if text == BTN_GAME:
-        return await cmd_game(update, context)
 
     await update.message.reply_text("Bấm menu để sử dụng nhé.", reply_markup=main_menu_keyboard())
 
@@ -1619,7 +1604,6 @@ def main():
     app.add_handler(CommandHandler("shop", cmd_shop))
     app.add_handler(CommandHandler("orders", cmd_orders))
     app.add_handler(CommandHandler("support", cmd_support))
-    app.add_handler(CommandHandler("game", cmd_game))
     app.add_handler(CommandHandler("hangve", cmd_hangve))
 
     app.add_handler(CallbackQueryHandler(callback_router))

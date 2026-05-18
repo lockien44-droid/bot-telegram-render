@@ -1338,13 +1338,17 @@ def welcome_text(user_fullname: str) -> str:
 
 
 async def setup_bot_commands(application: Application) -> None:
-    """Menu lệnh Telegram (gỡ /game khỏi BotFather cũ)."""
-    await application.bot.set_my_commands([
+    """Menu lệnh Telegram — không có /game."""
+    bot = application.bot
+    await bot.delete_my_commands()
+    await bot.set_my_commands([
+        BotCommand("start", "Menu chính"),
         BotCommand("shop", "Xem sản phẩm"),
         BotCommand("orders", "Đơn hàng của bạn"),
         BotCommand("support", "Hỗ trợ"),
         BotCommand("2fa", "Lấy mã 2FA từ secret"),
     ])
+    logger.info("✅ Đã cập nhật menu lệnh bot (không có /game)")
 
 
 
