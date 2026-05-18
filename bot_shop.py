@@ -1345,8 +1345,7 @@ def welcome_text(user_fullname: str) -> str:
         "📌 *Lệnh nhanh:*\n\n"
         "/shop - Xem sản phẩm\n\n"
         "/orders - Đơn hàng của bạn\n\n"
-        "/support - Hỗ trợ\n\n"
-        "/2fa - Lấy mã 2FA từ secret"
+        "/support - Hỗ trợ"
     )
 
 
@@ -1359,7 +1358,6 @@ async def setup_bot_commands(application: Application) -> None:
         BotCommand("shop", "Xem sản phẩm"),
         BotCommand("orders", "Đơn hàng của bạn"),
         BotCommand("support", "Hỗ trợ"),
-        BotCommand("2fa", "Lấy mã 2FA từ secret"),
     ])
     logger.info("✅ Đã cập nhật menu lệnh bot (không có /game)")
 
