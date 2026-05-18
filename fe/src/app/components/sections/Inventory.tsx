@@ -127,9 +127,23 @@ export function Inventory({ data, adminKey, refresh, preset }: Props) {
   const addStock = async () => {
     setBusy(true);
     try {
-      await adminApi("/admin/api/stock", adminKey, { method: "POST", body: JSON.stringify({ stock_code: addCode, items: addData }) });
+      const result = await adminApi<{ added?: number; notify?: { ok?: number; fail?: number; skipped?: boolean; reason?: string; error?: string } }>(
+        "/admin/api/stock",
+        adminKey,
+        { method: "POST", body: JSON.stringify({ stock_code: addCode, items: addData }) },
+      );
       setAddData("");
-      toast.success("Đã thêm stock vào kho");
+      const sent = result.notify?.ok ?? 0;
+      const failed = result.notify?.fail ?? 0;
+      if (result.notify?.skipped) {
+        toast.warning(`Đã thêm ${result.added ?? 0} dòng vào kho. Chưa gửi Telegram (${result.notify.reason || "unknown"}).`);
+      } else if (result.notify?.error) {
+        toast.warning(`Đã thêm kho. Gửi Telegram lỗi: ${result.notify.error}`);
+      } else if (sent > 0) {
+        toast.success(`Đã thêm kho và gửi thông báo tới ${sent} người${failed ? ` (${failed} lỗi)` : ""}`);
+      } else {
+        toast.success(`Đã thêm ${result.added ?? 0} dòng vào kho (chưa gửi được Telegram)`);
+      }
       await refresh();
     } finally {
       setBusy(false);

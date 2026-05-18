@@ -6,20 +6,19 @@ import { NAV_ITEMS, Sidebar, type AdminSection } from "./components/Sidebar";
 import { Overview } from "./components/sections/Overview";
 import { Products } from "./components/sections/Products";
 import { Inventory } from "./components/sections/Inventory";
-import { Materials } from "./components/sections/Materials";
 import { Orders } from "./components/sections/Orders";
 import { Users } from "./components/sections/Users";
 import { Reservations } from "./components/sections/Reservations";
 import { Fulfillments } from "./components/sections/Fulfillments";
 import { Notifications } from "./components/sections/Notifications";
+import { Revenue } from "./components/sections/Revenue";
 import { Button } from "./components/ui/button";
-import { adminApi, money, text, type AdminSnapshot } from "./api";
+import { adminApi, type AdminSnapshot } from "./api";
 import {
-  buildNotifications,
-  MAX_NOTIFICATIONS,
+  mapSheetNotification,
   NOTIFY_META,
-  type NotifyKind,
   type OrderNotification,
+  type SheetNotificationRow,
 } from "./notifications";
 
 const POLL_MS = 15_000;
@@ -36,15 +35,8 @@ export default function App() {
 
   const unreadCount = notifications.filter((n) => !n.read).length;
 
-  const pushNotify = useCallback((kind: NotifyKind, orders: any[]) => {
-    if (!orders.length) return;
-    const batch = buildNotifications(kind, orders);
-    setNotifications((prev) => [...batch, ...prev].slice(0, MAX_NOTIFICATIONS));
-  }, []);
-
-  const seenOrdersRef = useRef<Set<string>>(new Set());
-  const orderStatusRef = useRef<Map<string, string>>(new Map());
-  const initializedRef = useRef(false);
+  const notifHydratedRef = useRef(false);
+  const prevNotifIdsRef = useRef<Set<string>>(new Set());
   const audioRef = useRef<AudioContext | null>(null);
 
   const isAuthenticated = Boolean(adminKey);
@@ -73,78 +65,61 @@ export default function App() {
     }
   }, []);
 
-  const notifyFromSnapshot = useCallback((next: AdminSnapshot) => {
-    const nextIds = new Set<string>();
-    const newOrders: any[] = [];
-    const deliveredOrders: any[] = [];
-    const cancelledOrders: any[] = [];
-
-    for (const order of next.orders || []) {
-      const id = text(order.order_id);
-      if (id === "—") continue;
-      const status = text(order.status).toUpperCase();
-      nextIds.add(id);
-
-      const prevStatus = orderStatusRef.current.get(id);
-      if (initializedRef.current) {
-        if (!seenOrdersRef.current.has(id)) {
-          newOrders.push(order);
-        } else if (prevStatus && prevStatus !== status) {
-          if (status === "DELIVERED") deliveredOrders.push(order);
-          else if (status === "CANCELLED" || status === "EXPIRED") cancelledOrders.push(order);
+  const fetchNotifications = useCallback(
+    async (key: string) => {
+      if (!key) return;
+      try {
+        const res = await adminApi<{ items: SheetNotificationRow[] }>(`/admin/api/notifications?limit=300`, key);
+        const rows = Array.isArray(res.items) ? res.items : [];
+        const mapped = rows.map(mapSheetNotification);
+        const prev = prevNotifIdsRef.current;
+        if (notifHydratedRef.current) {
+          for (const n of mapped) {
+            if (prev.has(n.id)) continue;
+            playNotifySound();
+            const meta = NOTIFY_META[n.kind];
+            const desc = (n.message && n.message.trim()) || [n.stockCode, n.total, n.orderId].filter(Boolean).join(" · ");
+            if (n.kind === "new") toast.success(meta.title, { description: desc || n.orderId, duration: 7000 });
+            else if (n.kind === "cancelled" || n.kind === "expired") {
+              toast.error(meta.title, { description: desc || n.orderId, duration: 7000 });
+            } else {
+              toast(meta.title, { description: desc || n.orderId, duration: 7000 });
+            }
+          }
         }
+        notifHydratedRef.current = true;
+        prevNotifIdsRef.current = new Set(mapped.map((n) => n.id));
+        setNotifications(mapped);
+      } catch {
+        // offline / lỗi tạm — giữ danh sách cũ
       }
+    },
+    [playNotifySound],
+  );
 
-      orderStatusRef.current.set(id, status);
-    }
-
-    if (initializedRef.current) {
-      const toastFor = (kind: NotifyKind, list: any[]) => {
-        if (!list.length) return;
-        playNotifySound();
-        pushNotify(kind, list);
-        const meta = NOTIFY_META[kind];
-        const first = list[0];
-        const desc = `${text(first.stock_code)} - ${money(first.total)} - ${text(first.order_id)}`;
-        const count = list.length;
-        const title = count > 1 ? `${meta.title} (${count})` : meta.title;
-        if (kind === "new") toast.success(title, { description: desc, duration: 7000 });
-        else if (kind === "cancelled" || kind === "expired") toast.error(title, { description: desc, duration: 7000 });
-        else toast(title, { description: desc, duration: 7000 });
-      };
-
-      toastFor("new", newOrders);
-      for (const o of cancelledOrders) {
-        const st = text(o.status).toUpperCase();
-        toastFor(st === "CANCELLED" ? "cancelled" : "expired", [o]);
-      }
-      toastFor("delivered", deliveredOrders);
-    }
-
-    seenOrdersRef.current = nextIds;
-    initializedRef.current = true;
-  }, [playNotifySound, pushNotify]);
-
-  const refresh = useCallback(async (key = adminKey, options: { silent?: boolean } = {}) => {
-    if (!key) return;
-    if (!options.silent) {
-      setLoading(true);
-      setMessage("Đang tải dữ liệu...");
-    }
-    try {
-      const next = await adminApi<AdminSnapshot>("/admin/api/snapshot?limit=300&pool_limit=20000", key);
-      notifyFromSnapshot(next);
-      setData(next);
-      setMessage(`Cập nhật lúc ${next.generated_at} (${next.timezone})`);
-    } catch (err) {
+  const refresh = useCallback(
+    async (key = adminKey, options: { silent?: boolean } = {}) => {
+      if (!key) return;
       if (!options.silent) {
-        setMessage(err instanceof Error ? err.message : "Không tải được dữ liệu");
+        setLoading(true);
+        setMessage("Đang tải dữ liệu...");
       }
-      throw err;
-    } finally {
-      if (!options.silent) setLoading(false);
-    }
-  }, [adminKey, notifyFromSnapshot]);
+      try {
+        const next = await adminApi<AdminSnapshot>("/admin/api/snapshot?limit=300&pool_limit=20000", key);
+        setData(next);
+        setMessage(`Cập nhật lúc ${next.generated_at} (${next.timezone})`);
+        await fetchNotifications(key);
+      } catch (err) {
+        if (!options.silent) {
+          setMessage(err instanceof Error ? err.message : "Không tải được dữ liệu");
+        }
+        throw err;
+      } finally {
+        if (!options.silent) setLoading(false);
+      }
+    },
+    [adminKey, fetchNotifications],
+  );
 
   useEffect(() => {
     if (adminKey) refresh(adminKey).catch(() => undefined);
@@ -159,6 +134,16 @@ export default function App() {
   }, [adminKey, refresh]);
 
   useEffect(() => {
+    const onPageShow = (e: PageTransitionEvent) => {
+      if (!e.persisted) return;
+      const k = sessionStorage.getItem("admin_key") || "";
+      if (k) void fetchNotifications(k);
+    };
+    window.addEventListener("pageshow", onPageShow);
+    return () => window.removeEventListener("pageshow", onPageShow);
+  }, [fetchNotifications]);
+
+  useEffect(() => {
     document.title = unreadCount ? `(${unreadCount}) VM STORE` : "VM STORE";
   }, [unreadCount]);
 
@@ -166,7 +151,8 @@ export default function App() {
     await adminApi("/admin/api/login", key);
     sessionStorage.setItem("admin_key", key);
     setAdminKey(key);
-    setNotifications([]);
+    notifHydratedRef.current = false;
+    prevNotifIdsRef.current = new Set();
   };
 
   const handleLogout = () => {
@@ -174,10 +160,35 @@ export default function App() {
     setAdminKey("");
     setData(null);
     setNotifications([]);
-    initializedRef.current = false;
-    seenOrdersRef.current = new Set();
-    orderStatusRef.current = new Map();
+    notifHydratedRef.current = false;
+    prevNotifIdsRef.current = new Set();
   };
+
+  const markAllNotificationsRead = useCallback(async () => {
+    if (!adminKey) return;
+    try {
+      await adminApi("/admin/api/notifications/read", adminKey, {
+        method: "POST",
+        body: JSON.stringify({ all: true }),
+      });
+      await fetchNotifications(adminKey);
+    } catch {
+      toast.error("Không đánh dấu đã đọc được");
+    }
+  }, [adminKey, fetchNotifications]);
+
+  const clearAllNotifications = useCallback(async () => {
+    if (!adminKey) return;
+    try {
+      await adminApi("/admin/api/notifications/clear", adminKey, { method: "POST", body: "{}" });
+      setNotifications([]);
+      prevNotifIdsRef.current = new Set();
+      notifHydratedRef.current = false;
+      await fetchNotifications(adminKey);
+    } catch {
+      toast.error("Không xóa được thông báo trên sheet");
+    }
+  }, [adminKey, fetchNotifications]);
 
   if (!isAuthenticated) {
     return <AdminLogin onLogin={handleLogin} />;
@@ -186,45 +197,55 @@ export default function App() {
   const common = { data, adminKey, refresh };
   const renderSection = () => {
     switch (section) {
-      case "overview": return (
-        <Overview
-          data={data}
-          notifications={notifications}
-          onOpenOrders={(status) => {
-            setOrderPreset({ status, nonce: Date.now() });
-            setSection("orders");
-          }}
-          onOpenInventory={(status, stockCode) => {
-            setInventoryPreset({ status, stockCode, nonce: Date.now() });
-            setSection("inventory");
-          }}
-          onOpenUsers={() => setSection("users")}
-          onOpenNotifications={() => setSection("notifications")}
-          onOpenNotificationOrder={(orderId, status) => {
-            setOrderPreset({ orderId, status, nonce: Date.now() });
-            setSection("orders");
-          }}
-          onMarkNotificationsRead={() => setNotifications((prev) => prev.map((n) => ({ ...n, read: true })))}
-        />
-      );
-      case "notifications": return (
-        <Notifications
-          items={notifications}
-          onMarkAllRead={() => setNotifications((prev) => prev.map((n) => ({ ...n, read: true })))}
-          onClearAll={() => setNotifications([])}
-          onOpenOrder={(orderId, status) => {
-            setOrderPreset({ orderId, status, nonce: Date.now() });
-            setSection("orders");
-          }}
-        />
-      );
-      case "products": return <Products {...common} />;
-      case "inventory": return <Inventory {...common} preset={inventoryPreset} />;
-      case "materials": return <Materials {...common} />;
-      case "orders": return <Orders {...common} preset={orderPreset} />;
-      case "users": return <Users data={data} />;
-      case "reservations": return <Reservations data={data} />;
-      case "fulfillments": return <Fulfillments data={data} />;
+      case "overview":
+        return (
+          <Overview
+            data={data}
+            notifications={notifications}
+            onOpenOrders={(status) => {
+              setOrderPreset({ status, nonce: Date.now() });
+              setSection("orders");
+            }}
+            onOpenInventory={(status, stockCode) => {
+              setInventoryPreset({ status, stockCode, nonce: Date.now() });
+              setSection("inventory");
+            }}
+            onOpenUsers={() => setSection("users")}
+            onOpenNotifications={() => setSection("notifications")}
+            onOpenNotificationOrder={(orderId, status) => {
+              setOrderPreset({ orderId, status, nonce: Date.now() });
+              setSection("orders");
+            }}
+            onMarkNotificationsRead={markAllNotificationsRead}
+            onOpenRevenue={() => setSection("revenue")}
+          />
+        );
+      case "revenue":
+        return <Revenue data={data} />;
+      case "notifications":
+        return (
+          <Notifications
+            items={notifications}
+            onMarkAllRead={markAllNotificationsRead}
+            onClearAll={clearAllNotifications}
+            onOpenOrder={(orderId, status) => {
+              setOrderPreset({ orderId, status, nonce: Date.now() });
+              setSection("orders");
+            }}
+          />
+        );
+      case "products":
+        return <Products {...common} />;
+      case "inventory":
+        return <Inventory {...common} preset={inventoryPreset} />;
+      case "orders":
+        return <Orders {...common} preset={orderPreset} />;
+      case "users":
+        return <Users data={data} />;
+      case "reservations":
+        return <Reservations data={data} />;
+      case "fulfillments":
+        return <Fulfillments data={data} />;
     }
   };
 
@@ -234,12 +255,7 @@ export default function App() {
       <Sidebar
         active={section}
         notifyAlerts={unreadCount}
-        onChange={(next) => {
-          setSection(next);
-          if (next === "notifications") {
-            setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
-          }
-        }}
+        onChange={setSection}
         onLogout={handleLogout}
       />
       <main className="flex-1 overflow-y-auto">
@@ -271,16 +287,12 @@ export default function App() {
             <select
               className="w-full h-11 rounded-md border border-border bg-white px-3 text-sm font-medium shadow-sm"
               value={section}
-              onChange={(event) => {
-                const next = event.target.value as AdminSection;
-                setSection(next);
-                if (next === "notifications") {
-                  setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
-                }
-              }}
+              onChange={(event) => setSection(event.target.value as AdminSection)}
             >
               {NAV_ITEMS.map((item) => (
-                <option key={item.id} value={item.id}>{item.label}</option>
+                <option key={item.id} value={item.id}>
+                  {item.label}
+                </option>
               ))}
             </select>
           </div>

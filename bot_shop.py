@@ -25,6 +25,7 @@ from dotenv import load_dotenv
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(BASE_DIR, ".env"), override=True)
 from telegram import (
+    Bot,
     Update,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
@@ -76,6 +77,7 @@ TAB_POOL = os.getenv("POOL_TAB", "POOL").strip()
 TAB_RES = os.getenv("RESERVATIONS_TAB", "RESERVATIONS").strip()
 TAB_USERS = os.getenv("USERS_TAB", "USERS").strip()
 TAB_FUL = os.getenv("FULFILLMENTS_TAB", "FULFILLMENTS").strip()
+TAB_NOTIF = (os.getenv("NOTIFICATIONS_TAB", "notifications") or "notifications").strip() or "notifications"
 _ws_users = None
 
 def parse_admin_ids(raw: str) -> set[int]:
@@ -90,6 +92,8 @@ def parse_admin_ids(raw: str) -> set[int]:
 ADMIN_IDS = parse_admin_ids(os.getenv("ADMIN_IDS", "5322953111"))
 
 ORDER_TTL_SECONDS = int(os.getenv("ORDER_TTL_SECONDS", "300"))  # 5 phút
+# Đơn hiển thị cho khách trong menu "Đơn hàng" — chỉ đã giao thành công
+USER_ORDER_VISIBLE_STATUSES = {"DELIVERED"}
 APP_TIMEZONE = os.getenv("APP_TIMEZONE", "Asia/Ho_Chi_Minh").strip() or "Asia/Ho_Chi_Minh"
 LOCAL_TZ = ZoneInfo(APP_TIMEZONE)
 
@@ -116,6 +120,7 @@ _ws_products = None
 _ws_pool = None
 _ws_res = None
 _ws_ful = None
+_ws_notif = None
 
 
 PENDING_QTY: Dict[int, Dict[str, Any]] = {}  # user_id -> {"product_id": ...}
@@ -238,43 +243,46 @@ async def notify_admins_order_event(
     released: int = 0,
     actor_id: Optional[int] = None,
 ) -> None:
-    """Gửi Telegram cho admin: đơn mới / huỷ / hết hạn / đã giao."""
-    if not ADMIN_IDS or not context:
-        return
+    """Telegram cho admin (nếu có ADMIN_IDS) + luôn ghi dòng lên sheet notifications (dashboard)."""
+    if context and ADMIN_IDS:
+        oid = _esc_md2(order.get("order_id"))
+        uid = _esc_md2(order.get("user_id"))
+        stock = _esc_md2(order.get("stock_code"))
+        qty = _esc_md2(order.get("qty"))
+        total = _esc_md2(money_vnd(order.get("total")))
+        created = _esc_md2(order.get("created_at"))
+        status = _esc_md2((order.get("status") or "").upper())
 
-    oid = _esc_md2(order.get("order_id"))
-    uid = _esc_md2(order.get("user_id"))
-    stock = _esc_md2(order.get("stock_code"))
-    qty = _esc_md2(order.get("qty"))
-    total = _esc_md2(money_vnd(order.get("total")))
-    created = _esc_md2(order.get("created_at"))
-    status = _esc_md2((order.get("status") or "").upper())
+        titles = {
+            "new": "🛒 *Đơn mới chờ thanh toán*",
+            "cancelled": "❌ *Đơn đã huỷ*",
+            "expired": "⌛ *Đơn hết hạn*",
+            "delivered": "✅ *Đơn đã giao*",
+            "paid": "💰 *Đơn đã thanh toán*",
+        }
+        title = titles.get(event, "📦 *Cập nhật đơn hàng*")
 
-    titles = {
-        "new": "🛒 *Đơn mới chờ thanh toán*",
-        "cancelled": "❌ *Đơn đã huỷ*",
-        "expired": "⌛ *Đơn hết hạn*",
-        "delivered": "✅ *Đơn đã giao*",
-        "paid": "💰 *Đơn đã thanh toán*",
-    }
-    title = titles.get(event, "📦 *Cập nhật đơn hàng*")
+        lines = [
+            title,
+            f"Order: `{oid}`",
+            f"Khách: `{uid}`",
+            f"Stock: `{stock}`",
+            f"SL: `{qty}`",
+            f"Tổng: *{total}*",
+            f"Trạng thái: `{status}`",
+            f"Tạo lúc: `{created}`",
+        ]
+        if released:
+            lines.append(f"Trả kho: `{released}` item")
+        if actor_id is not None:
+            lines.append(f"Thao tác bởi: `{actor_id}`")
 
-    lines = [
-        title,
-        f"Order: `{oid}`",
-        f"Khách: `{uid}`",
-        f"Stock: `{stock}`",
-        f"SL: `{qty}`",
-        f"Tổng: *{total}*",
-        f"Trạng thái: `{status}`",
-        f"Tạo lúc: `{created}`",
-    ]
-    if released:
-        lines.append(f"Trả kho: `{released}` item")
-    if actor_id is not None:
-        lines.append(f"Thao tác bởi: `{actor_id}`")
+        await notify_admins(context, "\n".join(lines))
 
-    await notify_admins(context, "\n".join(lines))
+    try:
+        await gs_call(append_dashboard_notification_row_sync, event, order, released, actor_id)
+    except Exception as e:
+        logger.warning("append_dashboard_notification_row_sync failed: %s", e)
 
 async def gs_call(fn, *args, **kwargs):
     if asyncio.iscoroutinefunction(fn):
@@ -533,9 +541,10 @@ def get_all_user_chat_ids() -> List[int]:
 
 
 def init_sheets():
-    global _gs_client, _gs_sheet, _ws_orders, _ws_products, _ws_pool, _ws_res, _ws_users, _ws_ful
+    global _gs_client, _gs_sheet, _ws_orders, _ws_products, _ws_pool, _ws_res, _ws_users, _ws_ful, _ws_notif
 
     if _ws_orders and _ws_products and _ws_pool and _ws_res and _ws_users:
+        _ensure_notifications_worksheet()
         return
 
     if not GSHEET_ID:
@@ -581,22 +590,162 @@ def init_sheets():
         _ws_ful = _gs_sheet.worksheet(TAB_FUL)
     except Exception:
         _ws_ful = None
+    _ensure_notifications_worksheet()
+
+
 def headers_map(ws) -> Dict[str, int]:
     headers = ws.row_values(1)
     return {str(h).strip().lower(): i for i, h in enumerate(headers, start=1)}
 
-def get_all_records(ws) -> List[Dict[str, str]]:
-    values = ws.get_all_values()
-    if not values or len(values) < 2:
+
+NOTIF_HEADERS = ["id", "type", "message", "order_id", "is_read", "created_at"]
+
+
+def _ensure_notifications_worksheet() -> None:
+    global _ws_notif
+    if _ws_notif is not None:
+        return
+    if not _gs_sheet:
+        return
+    try:
+        _ws_notif = _gs_sheet.worksheet(TAB_NOTIF)
+        try:
+            row1 = _ws_notif.row_values(1)
+            got = [str(h).strip().lower() for h in row1]
+            want = [h.lower() for h in NOTIF_HEADERS]
+            if got != want:
+                _ws_notif.update("A1:F1", [NOTIF_HEADERS], value_input_option="USER_ENTERED")
+                logger.info("Đã chuẩn hoá dòng tiêu đề sheet notifications (tab=%s)", TAB_NOTIF)
+        except Exception as e:
+            logger.warning("Kiểm tra header notifications thất bại: %s", e)
+        return
+    except Exception:
+        pass
+    try:
+        _ws_notif = _gs_sheet.add_worksheet(title=TAB_NOTIF, rows=3000, cols=len(NOTIF_HEADERS))
+        _ws_notif.append_row(NOTIF_HEADERS, value_input_option="USER_ENTERED")
+        logger.info("Created worksheet %s", TAB_NOTIF)
+    except Exception as e:
+        logger.warning("NOTIFICATIONS worksheet unavailable: %s", e)
+        _ws_notif = None
+
+
+def append_dashboard_notification_row_sync(
+    event: str,
+    order: Dict[str, Any],
+    released: int = 0,
+    actor_id: Optional[int] = None,
+) -> None:
+    init_sheets()
+    _ensure_notifications_worksheet()
+    if not _ws_notif:
+        logger.warning(
+            "Không ghi được notifications: worksheet trống/tab=%s (kiểm tra NOTIFICATIONS_TAB và quyền service account)",
+            TAB_NOTIF,
+        )
+        return
+    nid = f"N{now_dt().strftime('%Y%m%d%H%M%S')}{''.join(random.choices(string.ascii_uppercase + string.digits, k=4))}"
+    titles_plain = {
+        "new": "Đơn mới chờ thanh toán",
+        "cancelled": "Đơn đã huỷ",
+        "expired": "Đơn hết hạn",
+        "delivered": "Đơn đã giao",
+        "paid": "Đơn đã thanh toán",
+    }
+    title = titles_plain.get(event, "Cập nhật đơn hàng")
+    oid = (order.get("order_id") or "").strip()
+    parts = [
+        f"Khách: {order.get('user_id', '')}",
+        f"Stock: {order.get('stock_code', '')}",
+        f"Tổng: {money_vnd(order.get('total'))}",
+        f"TT: {(order.get('status') or '').upper()}",
+    ]
+    if released:
+        parts.append(f"Trả kho: {released} item")
+    if actor_id is not None:
+        parts.append(f"Bởi: {actor_id}")
+    message = " · ".join(parts)
+    created = now_str()
+    # Một cột message: gộp tiêu đề ngắn + chi tiết (sheet không có cột title)
+    full_message = f"{title} — {message}" if message else title
+    try:
+        _ws_notif.append_row([nid, event, full_message, oid, "0", created], value_input_option="USER_ENTERED")
+    except Exception as e:
+        logger.warning("append_row notifications thất bại (event=%s order=%s): %s", event, oid, e)
+
+
+def append_dashboard_notification_simple_sync(event: str, title: str, message: str, order_id: str = "") -> None:
+    init_sheets()
+    _ensure_notifications_worksheet()
+    if not _ws_notif:
+        logger.warning(
+            "Không ghi được notifications (simple): worksheet trống/tab=%s",
+            TAB_NOTIF,
+        )
+        return
+    nid = f"N{now_dt().strftime('%Y%m%d%H%M%S')}{''.join(random.choices(string.ascii_uppercase + string.digits, k=4))}"
+    created = now_str()
+    full_message = f"{title}: {message}" if message else title
+    try:
+        _ws_notif.append_row([nid, event, full_message, order_id or "", "0", created], value_input_option="USER_ENTERED")
+    except Exception as e:
+        logger.warning("append_row notifications (simple) thất bại (event=%s): %s", event, e)
+
+
+def list_dashboard_notifications_sync(limit: int = 200) -> List[Dict[str, str]]:
+    init_sheets()
+    _ensure_notifications_worksheet()
+    if not _ws_notif:
         return []
-    headers = [str(h).strip() for h in values[0]]
-    rows = []
-    for r in values[1:]:
-        d = {}
-        for i, h in enumerate(headers):
-            d[h] = r[i].strip() if i < len(r) else ""
-        rows.append(d)
-    return rows
+    rows = get_all_records(_ws_notif)
+    rows.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+    return rows[: max(1, min(int(limit or 200), 500))]
+
+
+def mark_dashboard_notifications_read_sync(ids: Optional[List[str]] = None, mark_all: bool = False) -> int:
+    init_sheets()
+    _ensure_notifications_worksheet()
+    if not _ws_notif:
+        return 0
+    vals = _ws_notif.get_all_values()
+    if len(vals) < 2:
+        return 0
+    hmap = {str(h).strip().lower(): i for i, h in enumerate(vals[0], start=1)}
+    c_id = hmap.get("id")
+    c_read = hmap.get("is_read")
+    if not c_id or not c_read:
+        return 0
+    want = set(x.strip() for x in (ids or []) if x and str(x).strip())
+    cells: List[Cell] = []
+    updated = 0
+    for ri in range(2, len(vals) + 1):
+        row = vals[ri - 1]
+        oid = row[c_id - 1].strip() if c_id - 1 < len(row) else ""
+        if mark_all or oid in want:
+            cur = row[c_read - 1].strip() if c_read - 1 < len(row) else ""
+            if cur not in ("1", "true", "TRUE", "yes", "YES"):
+                cells.append(Cell(ri, c_read, "1"))
+                updated += 1
+    if cells:
+        _ws_notif.update_cells(cells, value_input_option="USER_ENTERED")
+    return updated
+
+
+def clear_dashboard_notifications_sync() -> int:
+    init_sheets()
+    _ensure_notifications_worksheet()
+    if not _ws_notif:
+        return 0
+    vals = _ws_notif.get_all_values()
+    n = len(vals)
+    if n <= 1:
+        return 0
+    try:
+        _ws_notif.delete_rows(2, n)
+    except Exception as e:
+        logger.warning("clear_dashboard_notifications delete_rows failed: %s", e)
+        return 0
+    return n - 1
 
 # ================== PRODUCTS + STOCK ==================
 def load_products() -> List[Dict[str, Any]]:
@@ -970,15 +1119,24 @@ def set_order_fields_sheet(
     if cells:
         _ws_orders.update_cells(cells, value_input_option="USER_ENTERED")
 
+def filter_user_success_orders(orders: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    return [
+        o for o in orders
+        if (o.get("status") or "").strip().upper() in USER_ORDER_VISIBLE_STATUSES
+    ]
+
+
 async def list_user_orders(user_id: int, limit: int = 10) -> List[Dict[str, str]]:
     if USE_BOT_API:
         try:
             resp = await _get_http_client().get(
                 f"{API_BASE_URL}/users/{user_id}/orders",
-                params={"limit": limit},
+                params={"limit": max(limit * 5, 50)},
             )
             if resp.status_code == 200:
-                return resp.json().get("orders", [])
+                orders = filter_user_success_orders(resp.json().get("orders", []))
+                orders.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+                return orders[:limit]
         except Exception as e:
             logger.warning("list_user_orders API failed %s: %s", user_id, e)
     return await gs_call(list_user_orders_sheet, user_id, limit)
@@ -1001,7 +1159,8 @@ def list_user_orders_sheet(user_id: int, limit: int = 10) -> List[Dict[str, str]
             d = {}
             for k, c in h.items():
                 d[k] = r[c - 1].strip() if c - 1 < len(r) else ""
-            rows.append(d)
+            if (d.get("status") or "").strip().upper() in USER_ORDER_VISIBLE_STATUSES:
+                rows.append(d)
 
     rows.sort(key=lambda x: x.get("created_at", ""), reverse=True)
     return rows[:limit]
@@ -2337,6 +2496,16 @@ async def release_overdue_pending_job(context: ContextTypes.DEFAULT_TYPE):
                 f"Trả kho: `{released_total}` item"
             ),
         )
+        try:
+            await gs_call(
+                append_dashboard_notification_simple_sync,
+                "expired",
+                "Đơn hết hạn (tự động)",
+                f"{expired_count} đơn, trả kho {released_total} item",
+                "",
+            )
+        except Exception as e:
+            logger.warning("append_dashboard_notification_simple_sync failed: %s", e)
 
 
 async def restore_pending_jobs(app: Application):
@@ -2501,7 +2670,7 @@ async def show_orders(user_id: int, context: ContextTypes.DEFAULT_TYPE):
     if not orders:
         await context.bot.send_message(
             chat_id=user_id,
-            text="📦 *ĐƠN HÀNG ĐÃ MUA*\n\n(Trống)\n\nBấm 🛍 Sản phẩm để mua.",
+            text="📦 *ĐƠN HÀNG ĐÃ MUA*\n\nChưa có đơn giao thành công.\n\nBấm 🛍 Sản phẩm để mua.",
             parse_mode="Markdown",
             reply_markup=main_menu_keyboard(),
         )
@@ -2510,7 +2679,7 @@ async def show_orders(user_id: int, context: ContextTypes.DEFAULT_TYPE):
     products, _ = await refresh_catalog_cache()
     name_by_code = {p["stock_code"]: p["name"] for p in products}
 
-    lines = ["📦 *ĐƠN HÀNG ĐÃ MUA*\n", "5 đơn gần nhất:\n", "━━━━━━━━━━━━━━━━"]
+    lines = ["📦 *ĐƠN HÀNG ĐÃ MUA*\n", "5 đơn giao thành công gần nhất:\n", "━━━━━━━━━━━━━━━━"]
 
     for o in orders[:5]:
         oid = o.get("order_id", "")
@@ -2518,8 +2687,6 @@ async def show_orders(user_id: int, context: ContextTypes.DEFAULT_TYPE):
         qty = o.get("qty", "")
         total = normalize_int(o.get("total"), 0)
         created = o.get("created_at", "")
-        st = (o.get("status") or "PENDING").upper()
-        emoji = status_emoji(st)
         product_name = name_by_code.get(sc) or sc
 
         lines.append(
@@ -2527,8 +2694,7 @@ async def show_orders(user_id: int, context: ContextTypes.DEFAULT_TYPE):
             f"📦 *{product_name}*\n"
             f"Mã kho: `{sc}` | SL: *{qty}*\n"
             f"Tổng: *{fmt_price(total)}*\n"
-            f"📅 {created}\n"
-            f"📌 Trạng thái: {emoji} *{st}*"
+            f"📅 {created}"
         )
         items_block = await _purchased_items_block(o)
         if items_block:
@@ -2559,7 +2725,7 @@ async def show_account(chat_id: int, context: ContextTypes.DEFAULT_TYPE, user):
             f"• Họ tên: *{user.full_name}*\n"
             f"• Username: @{user.username if user.username else '—'}\n"
             f"• User ID: `{user.id}`\n\n"
-            f"📦 Tổng đơn: *{count}*\n"
+            f"📦 Tổng đơn đã giao: *{count}*\n"
             f"💰 Tổng đã mua: *{fmt_price(total_spent)}*"
         ),
         parse_mode="Markdown",
@@ -2629,6 +2795,89 @@ async def cmd_hangve(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"Đã gửi: {ok} | Lỗi: {fail}")
 
+
+def stock_update_text(product_name: str, price: int, added: int, total_ready: int) -> str:
+    safe_name = escape_markdown(str(product_name or ""), version=1)
+    return (
+        "📦 *KHO HÀNG VỪA CẬP NHẬT!*\n\n"
+        f"🛒 ✅ {safe_name}\n\n"
+        f"💰 Giá: *{fmt_price(price)}*\n"
+        f"📊 Số lượng vừa nhập: *{added}*\n"
+        f"📦 Tổng còn trong kho: *{total_ready}*"
+    )
+
+
+def stock_update_keyboard(product_id: Optional[str]) -> InlineKeyboardMarkup:
+    rows: List[List[InlineKeyboardButton]] = []
+    if product_id:
+        rows.append([InlineKeyboardButton("🛒 Mua ngay", callback_data=f"buy|{product_id}")])
+    rows.append([InlineKeyboardButton("🛍️ Mua sản phẩm khác", callback_data="go_products")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def broadcast_stock_update(stock_code: str, added_count: int) -> Dict[str, Any]:
+    """Gửi thông báo nhập kho tới user trong USERS + admin (ADMIN_IDS)."""
+    if added_count <= 0:
+        return {"ok": 0, "fail": 0, "skipped": True, "reason": "added_zero"}
+
+    token = (BOT_TOKEN or "").strip()
+    if not token or token == "PUT_YOUR_BOT_TOKEN_HERE":
+        logger.warning("broadcast_stock_update: BOT_TOKEN chưa cấu hình")
+        return {"ok": 0, "fail": 0, "skipped": True, "reason": "no_bot_token"}
+
+    await refresh_catalog_cache(force=True)
+    product = await find_product_by_stock_code(stock_code)
+    _, ready_map = await refresh_catalog_cache(force=True)
+    total_ready = ready_map.get(stock_code, 0)
+
+    product_name = (product or {}).get("name") or stock_code
+    price = int((product or {}).get("price") or 0)
+    product_id = (product or {}).get("product_id") or ""
+
+    text = stock_update_text(product_name, price, added_count, total_ready)
+    kb = stock_update_keyboard(product_id or None)
+
+    recipients: List[int] = []
+    seen: set[int] = set()
+    for cid in await gs_call(get_all_user_chat_ids):
+        if cid not in seen:
+            seen.add(cid)
+            recipients.append(cid)
+    for admin_id in ADMIN_IDS:
+        if admin_id not in seen:
+            seen.add(admin_id)
+            recipients.append(admin_id)
+
+    if not recipients:
+        logger.warning("broadcast_stock_update: không có người nhận (USERS trống và ADMIN_IDS rỗng)")
+        return {"ok": 0, "fail": 0, "skipped": True, "reason": "no_recipients"}
+
+    ok = fail = 0
+    try:
+        async with Bot(token) as bot:
+            for cid in recipients:
+                try:
+                    await bot.send_message(
+                        chat_id=cid,
+                        text=text,
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=kb,
+                        disable_web_page_preview=True,
+                    )
+                    ok += 1
+                    await asyncio.sleep(0.05)
+                except Exception as e:
+                    fail += 1
+                    logger.warning("broadcast_stock_update fail chat_id=%s err=%s", cid, e)
+    except Exception as e:
+        logger.exception("broadcast_stock_update bot session failed: %s", e)
+        return {"ok": 0, "fail": len(recipients), "error": str(e)}
+
+    logger.info(
+        "broadcast_stock_update stock=%s added=%s total_ready=%s recipients=%s sent=%s fail=%s",
+        stock_code, added_count, total_ready, len(recipients), ok, fail,
+    )
+    return {"ok": ok, "fail": fail, "recipients": len(recipients)}
 
 
 async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):

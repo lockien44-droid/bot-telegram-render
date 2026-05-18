@@ -1,14 +1,10 @@
 import random
 import string
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from gspread.cell import Cell
 
 import bot_shop as shop
-
-MATERIALS_TAB = "MATERIALS"
-MATERIALS_HEADERS = ["id", "value", "status", "note", "created_at", "updated_at"]
-
 
 def _records(ws) -> List[Dict[str, str]]:
     return shop.get_all_records(ws) if ws else []
@@ -32,64 +28,41 @@ def _make_item_id(stock_code: str) -> str:
     return f"{stock_code.strip().upper()}-{shop.now_dt().strftime('%Y%m%d%H%M%S')}-{suffix}"
 
 
-def _materials_ws():
-    shop.init_sheets()
-    try:
-        ws = shop._gs_sheet.worksheet(MATERIALS_TAB)
-    except Exception:
-        ws = shop._gs_sheet.add_worksheet(title=MATERIALS_TAB, rows=1000, cols=len(MATERIALS_HEADERS))
-        ws.update("A1:F1", [MATERIALS_HEADERS], value_input_option="USER_ENTERED")
-        return ws
+def _revenue_period_stats(orders: List[Dict[str, Any]]) -> Dict[str, Dict[str, int]]:
+    """Doanh thu theo đơn PAID/DELIVERED — nhóm hôm nay / tháng / năm (timezone shop)."""
+    paid_statuses = {"PAID", "DELIVERED"}
+    buckets = {
+        "today": {"orders": 0, "revenue": 0},
+        "month": {"orders": 0, "revenue": 0},
+        "year": {"orders": 0, "revenue": 0},
+    }
+    now = shop.now_dt()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    month_start = today_start.replace(day=1)
+    year_start = today_start.replace(month=1, day=1)
 
-    headers = [str(h).strip().lower() for h in ws.row_values(1)]
-    if headers != MATERIALS_HEADERS:
-        ws.update("A1:F1", [MATERIALS_HEADERS], value_input_option="USER_ENTERED")
-    return ws
-
-
-def load_materials() -> List[Dict[str, str]]:
-    rows = _records(_materials_ws())
-    rows.sort(key=lambda x: x.get("updated_at") or x.get("created_at") or "", reverse=True)
-    return rows
-
-
-def save_materials(data: Dict[str, Any]) -> Dict[str, Any]:
-    ws = _materials_ws()
-    raw_items = data.get("items") or []
-    if not isinstance(raw_items, list):
-        raise ValueError("items must be a list")
-    force_clear = bool(data.get("force_clear"))
-    existing_items = _records(ws)
-
-    now = shop.now_str()
-    rows = [MATERIALS_HEADERS]
-    seen = set()
-    for raw in raw_items:
-        if not isinstance(raw, dict):
+    for order in orders:
+        status = (order.get("status") or "").strip().upper()
+        if status not in paid_statuses:
             continue
-        value = str(raw.get("value") or "").strip()
-        if not value or value in seen:
+        total = shop.normalize_int(order.get("total"), 0)
+        dt = None
+        for key in ("delivered_at", "paid_at", "created_at"):
+            dt = shop.parse_dt((order.get(key) or "").strip())
+            if dt:
+                break
+        if not dt:
             continue
-        seen.add(value)
-        status = str(raw.get("status") or "NEW").strip().upper()
-        if status not in ("NEW", "OK", "BAD"):
-            status = "NEW"
-        item_id = str(raw.get("id") or "").strip() or f"MAT-{shop.now_dt().strftime('%Y%m%d%H%M%S')}-{len(rows)}"
-        rows.append([
-            item_id,
-            value,
-            status,
-            str(raw.get("note") or ""),
-            str(raw.get("created_at") or now),
-            now,
-        ])
-
-    if len(rows) == 1 and existing_items and not force_clear:
-        return {"ok": True, "saved": len(existing_items), "items": load_materials(), "skipped_empty_save": True}
-
-    ws.clear()
-    ws.update(f"A1:F{len(rows)}", rows, value_input_option="USER_ENTERED")
-    return {"ok": True, "saved": len(rows) - 1, "items": load_materials()}
+        if dt >= today_start:
+            buckets["today"]["orders"] += 1
+            buckets["today"]["revenue"] += total
+        if dt >= month_start:
+            buckets["month"]["orders"] += 1
+            buckets["month"]["revenue"] += total
+        if dt >= year_start:
+            buckets["year"]["orders"] += 1
+            buckets["year"]["revenue"] += total
+    return buckets
 
 
 def snapshot(limit: int = 100, pool_limit: int = 2000) -> Dict[str, Any]:
@@ -100,7 +73,6 @@ def snapshot(limit: int = 100, pool_limit: int = 2000) -> Dict[str, Any]:
     users = _records(shop._ws_users)
     reservations = _records(shop._ws_res)
     fulfillments = _records(shop._ws_ful)
-    materials = load_materials()
 
     orders.sort(key=lambda x: x.get("created_at", ""), reverse=True)
     limit = max(1, min(int(limit or 100), 300))
@@ -181,12 +153,16 @@ def snapshot(limit: int = 100, pool_limit: int = 2000) -> Dict[str, Any]:
 
     delivery_rows.sort(key=lambda x: x.get("delivered_at", ""), reverse=True)
 
+    revenue_stats = _revenue_period_stats(orders)
+
     return {
         "generated_at": shop.now_str(),
         "timezone": shop.APP_TIMEZONE,
         "summary": {
             "orders": len(orders),
-            "revenue": revenue,
+            "revenue": revenue_stats["today"]["revenue"],
+            "revenue_all": revenue,
+            "revenue_stats": revenue_stats,
             "status_counts": status_counts,
             "users": len(users),
             "stock_ready": sum(v.get("READY", 0) for v in stock_counts.values()),
@@ -200,7 +176,6 @@ def snapshot(limit: int = 100, pool_limit: int = 2000) -> Dict[str, Any]:
         "reservations": reservations[:limit],
         "fulfillments": fulfillments[:limit],
         "deliveries": delivery_rows[:limit],
-        "materials": materials[:pool_limit],
     }
 
 
@@ -278,7 +253,8 @@ def add_stock(data: Dict[str, Any]) -> Dict[str, Any]:
     if rows:
         shop._ws_pool.append_rows(rows, value_input_option="USER_ENTERED")
         shop.invalidate_stock_cache()
-    return {"ok": True, "added": len(rows)}
+    total_ready = shop.stock_count_ready_by_code().get(stock_code, 0) if rows else 0
+    return {"ok": True, "added": len(rows), "stock_code": stock_code, "total_ready": total_ready}
 
 
 def release_order(order_id: str, status: str = "EXPIRED") -> Dict[str, Any]:
@@ -360,4 +336,38 @@ def update_order(order_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
     if not payload:
         raise ValueError("No allowed updates")
     shop.set_order_fields_sheet(order_id, payload)
+    st = (payload.get("status") or "").strip().upper()
+    if st in ("PAID", "DELIVERED", "CANCELLED", "EXPIRED"):
+        row = shop.get_order_sheet(order_id)
+        if row:
+            evt_map = {"DELIVERED": "delivered", "CANCELLED": "cancelled", "EXPIRED": "expired", "PAID": "paid"}
+            evt = evt_map.get(st)
+            if evt:
+                try:
+                    merged = dict(row)
+                    merged["status"] = st
+                    shop.append_dashboard_notification_row_sync(evt, merged)
+                except Exception:
+                    pass
     return {"ok": True, "order_id": order_id, "updates": payload}
+
+
+def notifications_list(limit: int = 200) -> Dict[str, Any]:
+    shop.init_sheets()
+    items = shop.list_dashboard_notifications_sync(limit)
+    return {"items": items}
+
+
+def notifications_mark_read(data: Dict[str, Any]) -> Dict[str, Any]:
+    mark_all = bool(data.get("all"))
+    ids = data.get("ids")
+    if not mark_all:
+        if not isinstance(ids, list) or not ids:
+            raise ValueError("Cần ids (mảng) hoặc all: true")
+    n = shop.mark_dashboard_notifications_read_sync(ids if isinstance(ids, list) else None, mark_all)
+    return {"updated": n}
+
+
+def notifications_clear_all() -> Dict[str, Any]:
+    n = shop.clear_dashboard_notifications_sync()
+    return {"deleted": n}

@@ -1,4 +1,4 @@
-import { Bell, BellOff, PackageCheck, PackagePlus, PackageX, Clock } from "lucide-react";
+import { Bell, BellOff, PackageCheck, PackagePlus, PackageX, Clock, Banknote } from "lucide-react";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { NOTIFY_META, type NotifyKind, type OrderNotification } from "../notifications";
@@ -8,6 +8,7 @@ const KIND_ICON: Record<NotifyKind, React.ReactNode> = {
   cancelled: <PackageX size={16} className="text-red-600" />,
   expired: <Clock size={16} className="text-amber-600" />,
   delivered: <PackageCheck size={16} className="text-blue-600" />,
+  paid: <Banknote size={16} className="text-violet-600" />,
 };
 
 function formatTime(iso: string) {
@@ -54,6 +55,11 @@ export function NotificationFeed({
     <div className="space-y-2">
       {visible.map((item) => {
         const meta = NOTIFY_META[item.kind];
+        const lineTitle = (item.title && item.title.trim()) || meta.title;
+        const lineDetail =
+          item.message && item.message.trim()
+            ? item.message.trim()
+            : [item.stockCode, item.total, item.orderId].filter(Boolean).join(" · ");
         return (
           <button
             key={item.id}
@@ -73,7 +79,7 @@ export function NotificationFeed({
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex flex-wrap items-center gap-1.5">
-                  <span className={`font-semibold ${compact ? "text-xs" : "text-sm"}`}>{meta.title}</span>
+                  <span className={`font-semibold ${compact ? "text-xs" : "text-sm"}`}>{lineTitle}</span>
                   {!item.read && (
                     <span className="text-[10px] uppercase font-bold text-emerald-700 bg-emerald-100 px-1 py-0.5 rounded">
                       Mới
@@ -81,7 +87,7 @@ export function NotificationFeed({
                   )}
                 </div>
                 <p className={`text-muted-foreground truncate ${compact ? "text-xs" : "text-sm"}`}>
-                  {item.stockCode} · {item.total} · <span className="font-mono">{item.orderId}</span>
+                  {lineDetail}
                 </p>
                 <p className="text-[11px] text-muted-foreground mt-0.5">{formatTime(item.at)}</p>
               </div>

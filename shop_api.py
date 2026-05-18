@@ -70,6 +70,19 @@ def api_create_order(body: CreateOrderBody) -> Dict[str, Any]:
         "created_at": created_at,
     })
 
+    shop.append_dashboard_notification_row_sync(
+        "new",
+        {
+            "order_id": order_id,
+            "user_id": str(body.user_id),
+            "stock_code": body.stock_code,
+            "qty": body.qty,
+            "total": total,
+            "status": "PENDING",
+            "created_at": created_at,
+        },
+    )
+
     return {
         "ok": True,
         "order": {
@@ -120,7 +133,8 @@ def api_upsert_user(body: UserBody) -> Dict[str, Any]:
 @router.get("/users/{user_id}/orders")
 def api_user_orders(user_id: int, limit: int = 10) -> Dict[str, Any]:
     shop.init_sheets()
-    return {"orders": shop.list_user_orders(user_id, limit)}
+    orders = shop.list_user_orders_sheet(user_id, max(limit, 10))
+    return {"orders": orders}
 
 
 def register_shop_api_routes(app) -> None:

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 from typing import Any, Dict
 
@@ -6,8 +7,20 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from admin_services import add_stock, release_holds, release_order, save_materials, save_product, snapshot, update_order
+from admin_services import (
+    add_stock,
+    notifications_clear_all,
+    notifications_list,
+    notifications_mark_read,
+    release_holds,
+    release_order,
+    save_product,
+    snapshot,
+    update_order,
+)
 from sepay_webhook import process_payment
+
+logger = logging.getLogger(__name__)
 
 
 ADMIN_HTML = """<!doctype html>
@@ -451,6 +464,22 @@ def register_admin_routes(app: FastAPI) -> None:
         require_admin(request)
         return {"ok": True}
 
+    @app.get("/admin/api/notifications")
+    async def admin_notifications_list(request: Request, limit: int = 200):
+        require_admin(request)
+        return await asyncio.to_thread(notifications_list, limit)
+
+    @app.post("/admin/api/notifications/read")
+    async def admin_notifications_read(request: Request):
+        require_admin(request)
+        data: Dict[str, Any] = await request.json()
+        return await asyncio.to_thread(notifications_mark_read, data)
+
+    @app.post("/admin/api/notifications/clear")
+    async def admin_notifications_clear(request: Request):
+        require_admin(request)
+        return await asyncio.to_thread(notifications_clear_all)
+
     @app.get("/admin/api/snapshot")
     async def admin_snapshot(request: Request, limit: int = 100, pool_limit: int = 2000):
         require_admin(request)
@@ -464,7 +493,18 @@ def register_admin_routes(app: FastAPI) -> None:
     @app.post("/admin/api/stock")
     async def admin_add_stock(request: Request):
         require_admin(request)
-        return await asyncio.to_thread(add_stock, await request.json())
+        result = await asyncio.to_thread(add_stock, await request.json())
+        added = int(result.get("added") or 0)
+        stock_code = (result.get("stock_code") or "").strip()
+        if added > 0 and stock_code:
+            try:
+                from bot_shop import broadcast_stock_update
+
+                result["notify"] = await broadcast_stock_update(stock_code, added)
+            except Exception as e:
+                logger.exception("broadcast_stock_update failed")
+                result["notify"] = {"ok": 0, "fail": 0, "error": str(e)}
+        return result
 
     @app.post("/admin/api/orders/release")
     async def admin_release_order(request: Request):
@@ -508,8 +548,3 @@ def register_admin_routes(app: FastAPI) -> None:
         }
         await process_payment(payload)
         return {"ok": True, "order_id": order_id, "queued": False}
-
-    @app.post("/admin/api/materials")
-    async def admin_save_materials(request: Request):
-        require_admin(request)
-        return await asyncio.to_thread(save_materials, await request.json())

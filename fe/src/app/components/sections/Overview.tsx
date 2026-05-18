@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Badge } from "../ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
@@ -5,6 +6,7 @@ import { ShoppingCart, DollarSign, Clock, CheckCircle, XCircle, Users, Package, 
 import { money, text, type AdminSnapshot } from "../../api";
 import type { OrderNotification } from "../../notifications";
 import { NotificationFeed, NotificationFeedHeader } from "../NotificationFeed";
+import { getRevenueStats } from "../../revenue";
 
 interface OverviewProps {
   data: AdminSnapshot | null;
@@ -15,6 +17,7 @@ interface OverviewProps {
   onOpenNotifications?: () => void;
   onOpenNotificationOrder?: (orderId: string, status?: string) => void;
   onMarkNotificationsRead?: () => void;
+  onOpenRevenue?: () => void;
 }
 
 export function Overview({
@@ -26,15 +29,27 @@ export function Overview({
   onOpenNotifications,
   onOpenNotificationOrder,
   onMarkNotificationsRead,
+  onOpenRevenue,
 }: OverviewProps) {
+  const revenueStats = useMemo(() => (data ? getRevenueStats(data) : null), [data]);
+
   if (!data) return <EmptyState />;
 
   const s = data.summary;
   const c = s.status_counts || {};
   const unreadNotify = notifications.filter((n) => !n.read).length;
+  const todayRevenue = revenueStats?.today.revenue ?? s.revenue;
   const cards = [
     { title: "Tổng đơn", value: s.orders, icon: <ShoppingCart size={20} />, color: "text-blue-600", bg: "bg-blue-50", onClick: () => onOpenOrders?.() },
-    { title: "Doanh thu", value: money(s.revenue), icon: <DollarSign size={20} />, color: "text-emerald-600", bg: "bg-emerald-50", onClick: () => onOpenOrders?.("DELIVERED") },
+    {
+      title: "Doanh thu hôm nay",
+      value: money(todayRevenue),
+      sub: revenueStats ? `${revenueStats.today.orders} đơn` : undefined,
+      icon: <DollarSign size={20} />,
+      color: "text-emerald-600",
+      bg: "bg-emerald-50",
+      onClick: () => onOpenRevenue?.(),
+    },
     {
       title: "Thông báo",
       value: unreadNotify > 0 ? unreadNotify : notifications.length,
@@ -65,10 +80,14 @@ export function Overview({
             </CardHeader>
             <CardContent className="px-4 pb-4">
               <p className={`text-lg ${card.color} truncate`}>{card.value}</p>
+              {"sub" in card && card.sub ? (
+                <p className="text-[11px] text-muted-foreground mt-0.5">{card.sub}</p>
+              ) : null}
             </CardContent>
           </Card>
         ))}
       </div>
+
 
       <Card className="shadow-sm">
         <CardHeader className="pb-3">

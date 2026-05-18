@@ -667,6 +667,15 @@ async def process_payment(payload: Dict[str, Any]) -> None:
             rownum,
             {"status": "PAID", "deliver_text": "(POOL_EMPTY)", "delivered_at": ""},
         )
+        try:
+            from bot_shop import append_dashboard_notification_row_sync
+
+            paid_row = dict(order)
+            paid_row["order_id"] = canonical_oid
+            paid_row["status"] = "PAID"
+            await gs_call(append_dashboard_notification_row_sync, "paid", paid_row)
+        except Exception as e:
+            logger.warning("append_dashboard_notification paid_row failed: %s", e)
         return
 
     delivered_at = now_str()
@@ -676,6 +685,17 @@ async def process_payment(payload: Dict[str, Any]) -> None:
 
     await gs_call(update_order_cells, rownum, {"status": "DELIVERED", "delivered_at": delivered_at, "deliver_text": deliver_text_plain})
 
+    try:
+        from bot_shop import append_dashboard_notification_row_sync
+
+        delivered_row = dict(order)
+        delivered_row["order_id"] = canonical_oid
+        delivered_row["status"] = "DELIVERED"
+        delivered_row["delivered_at"] = delivered_at
+        delivered_row["deliver_text"] = deliver_text_plain
+        await gs_call(append_dashboard_notification_row_sync, "delivered", delivered_row)
+    except Exception as e:
+        logger.warning("append_dashboard_notification delivered_row failed: %s", e)
 
     # 5) write fulfillments (optional) - dùng canonical_oid
     try:

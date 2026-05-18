@@ -6,6 +6,12 @@ export interface AdminSnapshot {
   summary: {
     orders: number;
     revenue: number;
+    revenue_all?: number;
+    revenue_stats?: {
+      today: { orders: number; revenue: number };
+      month: { orders: number; revenue: number };
+      year: { orders: number; revenue: number };
+    };
     status_counts: Record<string, number>;
     users: number;
     stock_ready: number;
@@ -19,7 +25,6 @@ export interface AdminSnapshot {
   reservations: AnyRow[];
   fulfillments: AnyRow[];
   deliveries?: AnyRow[];
-  materials?: AnyRow[];
 }
 
 export async function adminApi<T>(path: string, key: string, options: RequestInit = {}): Promise<T> {
