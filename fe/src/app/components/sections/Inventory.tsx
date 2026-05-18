@@ -16,6 +16,7 @@ interface Props {
   adminKey: string;
   refresh: () => Promise<void>;
   preset?: { status?: string; stockCode?: string; nonce: number };
+  addStockPreset?: { stockCode: string; nonce: number };
   embedded?: boolean;
 }
 
@@ -40,7 +41,7 @@ function countByStatus(items: AnyRow[]) {
   return counts;
 }
 
-export function Inventory({ data, adminKey, refresh, preset, embedded }: Props) {
+export function Inventory({ data, adminKey, refresh, preset, addStockPreset, embedded }: Props) {
   const [addCode, setAddCode] = useState("");
   const [addData, setAddData] = useState("");
   const [filterStatus, setFilterStatus] = useState("ALL");
@@ -49,6 +50,7 @@ export function Inventory({ data, adminKey, refresh, preset, embedded }: Props) 
   const [busy, setBusy] = useState(false);
   const [viewMode, setViewMode] = useState<"group" | "detail">("group");
   const [expandedCodes, setExpandedCodes] = useState<Set<string>>(new Set());
+  const [sectionTab, setSectionTab] = useState("view");
 
   const pool = data?.pool || [];
   const productCodes = useMemo(
@@ -125,6 +127,15 @@ export function Inventory({ data, adminKey, refresh, preset, embedded }: Props) 
     }
   }, [preset?.nonce, preset?.status, preset?.stockCode]);
 
+  useEffect(() => {
+    if (!addStockPreset?.nonce) return;
+    const code = normalizeCode(addStockPreset.stockCode);
+    setAddCode(code);
+    setFilterCode(code);
+    setSectionTab("add");
+    toast.info(`Thêm stock cho ${code}`, { description: "Nhập mỗi dòng 1 account/secret rồi bấm Thêm vào kho." });
+  }, [addStockPreset?.nonce, addStockPreset?.stockCode]);
+
   const addStock = async () => {
     setBusy(true);
     try {
@@ -196,7 +207,7 @@ export function Inventory({ data, adminKey, refresh, preset, embedded }: Props) 
         ))}
       </div>
 
-      <Tabs defaultValue="view">
+      <Tabs value={sectionTab} onValueChange={setSectionTab}>
         <TabsList>
           <TabsTrigger value="view">Xem kho</TabsTrigger>
           <TabsTrigger value="add">Thêm stock</TabsTrigger>

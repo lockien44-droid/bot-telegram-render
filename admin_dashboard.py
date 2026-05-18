@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from admin_services import (
     add_stock,
+    delete_product,
     notifications_clear_all,
     notifications_list,
     notifications_mark_read,
@@ -489,6 +490,11 @@ def register_admin_routes(app: FastAPI) -> None:
     async def admin_save_product(request: Request):
         require_admin(request)
         return await asyncio.to_thread(save_product, await request.json())
+
+    @app.post("/admin/api/products/delete")
+    async def admin_delete_product(request: Request):
+        require_admin(request)
+        return await asyncio.to_thread(delete_product, await request.json())
 
     @app.post("/admin/api/stock")
     async def admin_add_stock(request: Request):

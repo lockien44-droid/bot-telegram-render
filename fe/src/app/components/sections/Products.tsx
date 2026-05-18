@@ -6,7 +6,18 @@ import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { Badge } from "../ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "../ui/dialog";
-import { Plus, Pencil, Package } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "../ui/alert-dialog";
+import { Plus, Pencil, Package, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 import { adminApi, money, text, type AdminSnapshot, type AnyRow } from "../../api";
 
 interface Props {
@@ -14,14 +25,17 @@ interface Props {
   adminKey: string;
   refresh: () => Promise<void>;
   embedded?: boolean;
+  onAddStock?: (stockCode: string) => void;
 }
 
 const EMPTY = { product_id: "", name: "", stock_code: "", price: "", description: "" };
 
-export function Products({ data, adminKey, refresh, embedded }: Props) {
+export function Products({ data, adminKey, refresh, embedded, onAddStock }: Props) {
   const [modalOpen, setModalOpen] = useState(false);
   const [form, setForm] = useState({ ...EMPTY });
   const [saving, setSaving] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<AnyRow | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const openAdd = () => { setForm({ ...EMPTY }); setModalOpen(true); };
   const openEdit = (p: AnyRow) => {
@@ -46,6 +60,38 @@ export function Products({ data, adminKey, refresh, embedded }: Props) {
     }
   };
 
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    const productId = text(deleteTarget.product_id);
+    const stockCode = text(deleteTarget.stock_code);
+    setDeleting(true);
+    try {
+      await adminApi("/admin/api/products/delete", adminKey, {
+        method: "POST",
+        body: JSON.stringify({
+          product_id: productId === "—" ? "" : productId,
+          stock_code: stockCode === "—" ? "" : stockCode,
+        }),
+      });
+      toast.success("Đã xóa sản phẩm");
+      setDeleteTarget(null);
+      await refresh();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Không xóa được sản phẩm");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const openAddStock = (p: AnyRow) => {
+    const code = text(p.stock_code);
+    if (code === "—" || !code.trim()) {
+      toast.error("Sản phẩm chưa có stock code");
+      return;
+    }
+    onAddStock?.(code.trim().toUpperCase());
+  };
+
   const products = data?.products || [];
 
   return (
@@ -55,9 +101,13 @@ export function Products({ data, adminKey, refresh, embedded }: Props) {
         <Button size="sm" className="gap-1.5" onClick={openAdd}><Plus size={15} /> Thêm sản phẩm</Button>
       </div>
 
+      {onAddStock && (
+        <p className="text-xs text-muted-foreground">Bấm vào dòng sản phẩm để mở form thêm stock vào kho.</p>
+      )}
+
       <Card className="shadow-sm">
         <CardContent className="p-0 overflow-x-auto">
-          <Table className="min-w-[760px]">
+          <Table className="min-w-[800px]">
             <TableHeader>
               <TableRow>
                 <TableHead>Tên sản phẩm</TableHead>
@@ -67,12 +117,16 @@ export function Products({ data, adminKey, refresh, embedded }: Props) {
                 <TableHead className="text-center">HELD</TableHead>
                 <TableHead className="text-center">SOLD</TableHead>
                 <TableHead>Mô tả</TableHead>
-                <TableHead className="text-center">Sửa</TableHead>
+                <TableHead className="text-center w-[88px]">Thao tác</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {products.map((p) => (
-                <TableRow key={p.product_id || p.stock_code}>
+                <TableRow
+                  key={p.product_id || p.stock_code}
+                  className={onAddStock ? "cursor-pointer hover:bg-emerald-50/60" : undefined}
+                  onClick={() => onAddStock && openAddStock(p)}
+                >
                   <TableCell className="font-medium">{text(p.name)}</TableCell>
                   <TableCell><code className="bg-muted px-1.5 py-0.5 rounded text-xs">{text(p.stock_code)}</code></TableCell>
                   <TableCell className="text-right text-emerald-700">{money(p.price)}</TableCell>
@@ -80,8 +134,21 @@ export function Products({ data, adminKey, refresh, embedded }: Props) {
                   <TableCell className="text-center"><Badge variant={Number(p.HELD) > 0 ? "secondary" : "outline"}>{p.HELD || 0}</Badge></TableCell>
                   <TableCell className="text-center"><Badge variant="outline">{p.SOLD || 0}</Badge></TableCell>
                   <TableCell className="text-sm text-muted-foreground max-w-[220px] truncate">{text(p.description)}</TableCell>
-                  <TableCell className="text-center">
-                    <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(p)}><Pencil size={14} /></Button>
+                  <TableCell className="text-center" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex items-center justify-center gap-0.5">
+                      <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(p)} title="Sửa">
+                        <Pencil size={14} />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-destructive hover:text-destructive"
+                        onClick={() => setDeleteTarget(p)}
+                        title="Xóa"
+                      >
+                        <Trash2 size={14} />
+                      </Button>
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}
@@ -107,6 +174,31 @@ export function Products({ data, adminKey, refresh, embedded }: Props) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={Boolean(deleteTarget)} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Xóa sản phẩm?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Xóa <strong>{deleteTarget ? text(deleteTarget.name) : ""}</strong> ({deleteTarget ? text(deleteTarget.stock_code) : ""}) khỏi danh mục.
+              Stock trong kho (POOL) không bị xóa — chỉ gỡ dòng trên sheet PRODUCTS.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Hủy</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={deleting}
+              onClick={(e) => {
+                e.preventDefault();
+                void confirmDelete();
+              }}
+            >
+              {deleting ? "Đang xóa..." : "Xóa"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

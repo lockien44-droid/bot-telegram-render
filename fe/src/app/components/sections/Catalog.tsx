@@ -14,6 +14,7 @@ interface Props {
 
 export function Catalog({ data, adminKey, refresh, preset }: Props) {
   const [tab, setTab] = useState<"products" | "inventory">("products");
+  const [addStockPreset, setAddStockPreset] = useState<{ stockCode: string; nonce: number } | undefined>();
 
   useEffect(() => {
     if (!preset?.nonce) return;
@@ -34,11 +35,27 @@ export function Catalog({ data, adminKey, refresh, preset }: Props) {
         </TabsList>
 
         <TabsContent value="products" className="mt-4 space-y-0">
-          <Products embedded data={data} adminKey={adminKey} refresh={refresh} />
+          <Products
+            embedded
+            data={data}
+            adminKey={adminKey}
+            refresh={refresh}
+            onAddStock={(stockCode) => {
+              setAddStockPreset({ stockCode, nonce: Date.now() });
+              setTab("inventory");
+            }}
+          />
         </TabsContent>
 
         <TabsContent value="inventory" className="mt-4 space-y-0">
-          <Inventory embedded data={data} adminKey={adminKey} refresh={refresh} preset={preset} />
+          <Inventory
+            embedded
+            data={data}
+            adminKey={adminKey}
+            refresh={refresh}
+            preset={preset}
+            addStockPreset={addStockPreset}
+          />
         </TabsContent>
       </Tabs>
     </div>

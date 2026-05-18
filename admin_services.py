@@ -225,6 +225,42 @@ def save_product(data: Dict[str, Any]) -> Dict[str, Any]:
     return {"ok": True, "product_id": product_id}
 
 
+def delete_product(data: Dict[str, Any]) -> Dict[str, Any]:
+    shop.init_sheets()
+    headers = _headers(shop._ws_products)
+    if not headers:
+        raise RuntimeError("PRODUCTS thieu header")
+
+    product_id = (data.get("product_id") or "").strip()
+    stock_code = shop.normalize_stock_code(data.get("stock_code") or "")
+    if not product_id and not stock_code:
+        raise ValueError("Can co product_id hoac stock_code")
+
+    values = shop._ws_products.get_all_values()
+    id_col = headers.get("product_id")
+    code_col = headers.get("stock_code")
+    target_row = None
+    matched_id = ""
+    for idx, row in enumerate(values[1:], start=2):
+        row_id = row[id_col - 1].strip() if id_col and id_col - 1 < len(row) else ""
+        row_code = shop.normalize_stock_code(row[code_col - 1]) if code_col and code_col - 1 < len(row) else ""
+        if product_id and row_id == product_id:
+            target_row = idx
+            matched_id = row_id
+            break
+        if stock_code and row_code == stock_code:
+            target_row = idx
+            matched_id = row_id or stock_code
+            break
+
+    if not target_row:
+        raise ValueError("Khong tim thay san pham")
+
+    shop._ws_products.delete_rows(target_row)
+    shop._CACHE["products"]["ts"] = 0.0
+    return {"ok": True, "product_id": matched_id}
+
+
 def add_stock(data: Dict[str, Any]) -> Dict[str, Any]:
     shop.init_sheets()
     headers = _headers(shop._ws_pool)
