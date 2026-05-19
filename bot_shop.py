@@ -146,6 +146,8 @@ _CACHE = {
 }
 
 LAST_MAIL_INPUT: Dict[int, str] = {}
+LAST_TOTP_INPUT: Dict[int, str] = {}
+LAST_ACTION_KIND: Dict[int, str] = {}  # user_id -> "mail" | "2fa"
 def _ts() -> float:
     return time.time()
 
@@ -1533,7 +1535,7 @@ def quick_actions_kb() -> InlineKeyboardMarkup:
             InlineKeyboardButton("🔐 2FA", callback_data="2fa_help"),
             InlineKeyboardButton("📬 Đọc mail", callback_data="mail_help"),
         ],
-        [InlineKeyboardButton("🔄 Đọc lại thư", callback_data="mail_repeat")],
+        [InlineKeyboardButton("🔄 Đọc lại", callback_data="mail_repeat")],
         [InlineKeyboardButton("⬅️ Menu chính", callback_data="back_main")],
     ])
 
@@ -1768,23 +1770,76 @@ async def send_2fa_help(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def send_2fa_from_text(update: Update, context: ContextTypes.DEFAULT_TYPE, raw: str):
-    secrets = extract_totp_secrets(raw)
-    if not secrets:
-        await send_2fa_help(update.effective_chat.id, context)
-        return
-
+def _build_totp_text(raw: str) -> Optional[str]:
+    secrets_list = extract_totp_secrets(raw)
+    if not secrets_list:
+        return None
     lines = ["🔐 *Mã 2FA hiện tại*"]
-    for idx, secret in enumerate(secrets[:10], start=1):
+    for idx, secret in enumerate(secrets_list[:10], start=1):
         try:
             code, remain = generate_totp(secret)
             lines.append(f"\n{idx}) `{code}` - còn *{remain}s*")
         except Exception:
             lines.append(f"\n{idx}) Secret không hợp lệ")
-    if len(secrets) > 10:
-        lines.append(f"\n\nChỉ xử lý 10 secret đầu tiên. Còn {len(secrets) - 10} secret chưa hiển thị.")
+    if len(secrets_list) > 10:
+        lines.append(f"\n\nChỉ xử lý 10 secret đầu tiên. Còn {len(secrets_list) - 10} secret chưa hiển thị.")
+    return "\n".join(lines)
 
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=quick_actions_kb())
+
+async def send_2fa_from_text(update: Update, context: ContextTypes.DEFAULT_TYPE, raw: str):
+    text = _build_totp_text(raw)
+    if not text:
+        await send_2fa_help(update.effective_chat.id, context)
+        return
+    if update.effective_user:
+        LAST_TOTP_INPUT[update.effective_user.id] = raw
+        LAST_ACTION_KIND[update.effective_user.id] = "2fa"
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=quick_actions_kb())
+
+
+async def regen_2fa_again(chat_id: int, user_id: int, context: ContextTypes.DEFAULT_TYPE):
+    raw = LAST_TOTP_INPUT.get(user_id, "").strip()
+    if not raw:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="Chưa có secret 2FA gần nhất để tạo lại. Bạn gửi secret hoặc dùng /2fa trước nhé.",
+            reply_markup=quick_actions_kb(),
+        )
+        return
+    text = _build_totp_text(raw)
+    if not text:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="Secret 2FA gần nhất không hợp lệ. Vui lòng gửi lại secret hoặc /2fa.",
+            reply_markup=quick_actions_kb(),
+        )
+        return
+    await context.bot.send_message(
+        chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=quick_actions_kb()
+    )
+
+
+async def reuse_last_action(chat_id: int, user_id: int, context: ContextTypes.DEFAULT_TYPE):
+    """Đọc lại thư hoặc tạo lại 2FA tuỳ vào hành động cuối user đã làm."""
+    kind = LAST_ACTION_KIND.get(user_id)
+    if kind == "2fa" and LAST_TOTP_INPUT.get(user_id):
+        return await regen_2fa_again(chat_id, user_id, context)
+    if kind == "mail" and LAST_MAIL_INPUT.get(user_id):
+        return await read_mail_again(chat_id, user_id, context)
+    # Fallback: ưu tiên thư nếu có, sau đó 2fa
+    if LAST_MAIL_INPUT.get(user_id):
+        return await read_mail_again(chat_id, user_id, context)
+    if LAST_TOTP_INPUT.get(user_id):
+        return await regen_2fa_again(chat_id, user_id, context)
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            "Chưa có hành động gần nhất để lặp lại.\n"
+            "Bạn gửi *secret 2FA* hoặc *chuỗi hòm thư* trước, rồi bấm 🔄 Đọc lại."
+        ),
+        parse_mode="Markdown",
+        reply_markup=quick_actions_kb(),
+    )
 
 
 def _is_admin_user(update: Update) -> bool:
@@ -1876,6 +1931,7 @@ async def render_mail_result(loading_msg, raw: str):
 async def read_mail_from_text(update: Update, raw: str):
     if update.effective_user:
         LAST_MAIL_INPUT[update.effective_user.id] = raw
+        LAST_ACTION_KIND[update.effective_user.id] = "mail"
     loading_msg = await update.message.reply_text("Đang đọc hòm thư...")
     await render_mail_result(loading_msg, raw)
 
@@ -3449,8 +3505,8 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await send_mail_help(q.from_user.id, context)
 
     if data == "mail_repeat":
-        await q.answer("Đang đọc lại thư...")
-        return await read_mail_again(q.message.chat_id, q.from_user.id, context)
+        await q.answer("Đang đọc lại...")
+        return await reuse_last_action(q.message.chat_id, q.from_user.id, context)
 
     if data == "2fa_help":
         await q.answer()
