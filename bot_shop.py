@@ -31,6 +31,7 @@ from telegram import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
     KeyboardButton,
 )
 from telegram.ext import (
@@ -1326,7 +1327,17 @@ BTN_2FA      = "🔐 2FA".replace("\ufe0f","")
 BTN_MAIL     = "📬 Đọc mail".replace("\ufe0f","")
 
 
-def main_menu_keyboard() -> ReplyKeyboardMarkup:
+def remove_reply_keyboard() -> ReplyKeyboardRemove:
+    """Xóa bàn phím cố định ở dưới (ReplyKeyboard) — đã chuyển sang inline keyboard."""
+    return ReplyKeyboardRemove()
+
+
+def main_menu_keyboard():  # noqa: ANN201
+    """Đã bỏ ReplyKeyboard cố định → trả về ReplyKeyboardRemove để xóa keyboard cũ."""
+    return ReplyKeyboardRemove()
+
+
+def _legacy_main_menu_keyboard() -> ReplyKeyboardMarkup:
     kb = [
         [KeyboardButton(BTN_PRODUCTS), KeyboardButton(BTN_SUPPORT)],
         [KeyboardButton(BTN_ORDERS)],
@@ -1337,59 +1348,48 @@ def main_menu_keyboard() -> ReplyKeyboardMarkup:
 
 
 def welcome_text(user_fullname: str) -> str:
-    name = escape_markdown(user_fullname or "bạn", version=1)
     shop = escape_markdown(SHOP_NAME, version=1)
+    zalo_link = escape_markdown(SUPPORT_ZALO, version=1)
+    tele = escape_markdown(SUPPORT_TELE, version=1)
     return (
-        f"👋 *Xin chào {name}!*\n\n"
-        f"*{shop}* rất vui được phục vụ bạn.\n\n"
-        "📌 *Lệnh nhanh:*\n\n"
-        "/shop - Xem sản phẩm\n\n"
-        "/orders - Đơn hàng của bạn\n\n"
-        "/support - Hỗ trợ\n\n"
-        "/help - Hướng dẫn"
+        f"🏪 *{shop} — AUTO ORDER BOT* 🤖\n\n"
+        "⚡ Cảm ơn bạn đã tin tưởng và sử dụng hệ thống mua hàng tự động.\n\n"
+        f"✈️ Hỗ trợ: {tele}\n"
+        f"💬 Zalo: `{zalo_link}` (ưu tiên)\n\n"
+        "🛍 Mua hàng tự động – nhanh – chính xác\n"
+        "💸 Thanh toán QR – xác nhận tức thì\n"
+        "📂 Nhận file ngay sau khi thanh toán\n\n"
+        "⬇️ Vui lòng chọn chức năng bên dưới"
     )
 
 
-def help_text() -> str:
-    ttl_min = max(1, ORDER_TTL_SECONDS // 60)
-    return (
-        "📖 *HƯỚNG DẪN SỬ DỤNG*\n\n"
-        "*1) Mua hàng*\n"
-        "• Bấm /shop hoặc nút 🛍 Sản phẩm.\n"
-        "• Chọn sản phẩm và số lượng → bấm *Mua*.\n"
-        "• Bot gửi mã QR / số tài khoản để chuyển khoản.\n\n"
-        "*2) Thanh toán*\n"
-        f"• Chuyển khoản đúng số tiền + *nội dung là mã đơn* trong vòng *{ttl_min} phút*.\n"
-        "• Bot tự động giao hàng khi nhận tiền (vài giây).\n"
-        "• Nếu lâu chưa nhận, bấm *Tôi đã thanh toán* trên đơn.\n\n"
-        "*3) Xem đơn*\n"
-        "• /orders — danh sách đơn hàng của bạn (giao thành công, đang chờ, hết hạn).\n\n"
-        "*4) Hỗ trợ*\n"
-        "• /support — liên hệ admin nếu gặp vấn đề thanh toán hoặc giao hàng."
-    )
-
-
-async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        help_text(),
-        parse_mode="Markdown",
-        disable_web_page_preview=True,
-        reply_markup=main_menu_keyboard(),
-    )
+def start_inline_kb() -> InlineKeyboardMarkup:
+    rows: List[List[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton("🛒 Xem sản phẩm", callback_data="go_products"),
+            InlineKeyboardButton("📋 Lịch sử đơn hàng", callback_data="go_orders"),
+        ],
+    ]
+    link_row: List[InlineKeyboardButton] = []
+    if SUPPORT_ZALO_LINK:
+        link_row.append(InlineKeyboardButton("💬 Nhóm Zalo", url=SUPPORT_ZALO_LINK))
+    if SUPPORT_TELE_LINK:
+        link_row.append(InlineKeyboardButton("✈️ Tele", url=SUPPORT_TELE_LINK))
+    if link_row:
+        rows.append(link_row)
+    rows.append([InlineKeyboardButton("🆘 Hỗ trợ", callback_data="go_support")])
+    return InlineKeyboardMarkup(rows)
 
 
 async def setup_bot_commands(application: Application) -> None:
-    """Menu lệnh Telegram — không có /game, không có /mail, /2fa cho user thường."""
+    """Menu lệnh Telegram — chỉ giữ /start và /support theo yêu cầu."""
     bot = application.bot
     await bot.delete_my_commands()
     await bot.set_my_commands([
         BotCommand("start", "Menu chính"),
-        BotCommand("shop", "Xem sản phẩm"),
-        BotCommand("orders", "Đơn hàng của bạn"),
         BotCommand("support", "Hỗ trợ"),
-        BotCommand("help", "Hướng dẫn"),
     ])
-    logger.info("✅ Đã cập nhật menu lệnh bot")
+    logger.info("✅ Đã cập nhật menu lệnh bot (chỉ /start, /support)")
 
 
 
@@ -1539,10 +1539,19 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     schedule_upsert_user(update.effective_chat.id, user.username or "", user.full_name or "")
 
+    # 1) Xóa ReplyKeyboard cũ (nếu user còn thấy keyboard cố định từ phiên trước)
+    try:
+        cleanup_msg = await update.message.reply_text("…", reply_markup=ReplyKeyboardRemove())
+        await cleanup_msg.delete()
+    except Exception:
+        pass
+
+    # 2) Gửi welcome + inline keyboard chính
     await update.message.reply_text(
         welcome_text(user.full_name),
         parse_mode="Markdown",
-        reply_markup=main_menu_keyboard(),
+        disable_web_page_preview=True,
+        reply_markup=start_inline_kb(),
     )
     await notify_user_start_event(
         context,
@@ -3089,7 +3098,8 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id=q.from_user.id,
             text=welcome_text(q.from_user.full_name),
             parse_mode="Markdown",
-            reply_markup=main_menu_keyboard(),
+            disable_web_page_preview=True,
+            reply_markup=start_inline_kb(),
         )
         return
 
@@ -3154,10 +3164,10 @@ def configure_application(app: Application) -> Application:
         )
 
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("support", cmd_support))
+    # Lệnh ẩn (không có trong menu Telegram) — vẫn gõ được nếu admin/user biết
     app.add_handler(CommandHandler("shop", cmd_shop))
     app.add_handler(CommandHandler("orders", cmd_orders))
-    app.add_handler(CommandHandler("support", cmd_support))
-    app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("hangve", cmd_hangve))
     app.add_handler(CommandHandler("mail", cmd_mail))
     app.add_handler(CommandHandler("2fa", cmd_2fa))
