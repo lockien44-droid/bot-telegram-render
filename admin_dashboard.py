@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import secrets
 from typing import Any, Dict
 
 from fastapi import FastAPI, HTTPException, Request
@@ -15,6 +16,7 @@ from admin_services import (
     notifications_mark_read,
     release_holds,
     release_order,
+    run_backup,
     save_product,
     snapshot,
     update_order,
@@ -441,8 +443,12 @@ def require_admin(request: Request) -> None:
     expected = os.environ.get("ADMIN_PASSWORD", "").strip()
     if not expected:
         raise HTTPException(status_code=503, detail="Set ADMIN_PASSWORD in Render Environment first.")
-    provided = (request.query_params.get("key") or request.headers.get("x-admin-key") or "").strip()
-    if provided != expected:
+    provided = (
+        request.headers.get("x-admin-key")
+        or request.query_params.get("key")  # giữ tương thích cũ; nên gỡ sau khi FE chuyển hết
+        or ""
+    ).strip()
+    if not provided or not secrets.compare_digest(provided, expected):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
@@ -482,9 +488,19 @@ def register_admin_routes(app: FastAPI) -> None:
         return await asyncio.to_thread(notifications_clear_all)
 
     @app.get("/admin/api/snapshot")
-    async def admin_snapshot(request: Request, limit: int = 100, pool_limit: int = 2000):
+    async def admin_snapshot(
+        request: Request,
+        limit: int = 100,
+        pool_limit: int = 2000,
+        reveal_secrets: int = 0,
+    ):
         require_admin(request)
-        return await asyncio.to_thread(snapshot, limit, pool_limit)
+        return await asyncio.to_thread(snapshot, limit, pool_limit, bool(reveal_secrets))
+
+    @app.post("/admin/api/backup")
+    async def admin_backup(request: Request):
+        require_admin(request)
+        return await asyncio.to_thread(run_backup)
 
     @app.post("/admin/api/products")
     async def admin_save_product(request: Request):

@@ -12,7 +12,7 @@ import { Fulfillments } from "./components/sections/Fulfillments";
 import { Notifications } from "./components/sections/Notifications";
 import { Revenue } from "./components/sections/Revenue";
 import { Button } from "./components/ui/button";
-import { adminApi, type AdminSnapshot } from "./api";
+import { adminApi, setAdminUnauthorizedHandler, type AdminSnapshot } from "./api";
 import {
   mapSheetNotification,
   NOTIFY_META,
@@ -156,14 +156,22 @@ export default function App() {
     prevNotifIdsRef.current = new Set();
   };
 
-  const handleLogout = () => {
+  const handleLogout = useCallback(() => {
     sessionStorage.removeItem("admin_key");
     setAdminKey("");
     setData(null);
     setNotifications([]);
     notifHydratedRef.current = false;
     prevNotifIdsRef.current = new Set();
-  };
+  }, []);
+
+  useEffect(() => {
+    setAdminUnauthorizedHandler(() => {
+      toast.error("Phiên đăng nhập hết hạn hoặc sai mật khẩu");
+      handleLogout();
+    });
+    return () => setAdminUnauthorizedHandler(null);
+  }, [handleLogout]);
 
   const markAllNotificationsRead = useCallback(async () => {
     if (!adminKey) return;

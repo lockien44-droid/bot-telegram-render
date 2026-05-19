@@ -1,3 +1,5 @@
+import logging
+import os
 import random
 import string
 from typing import Any, Dict, List, Optional
@@ -5,6 +7,31 @@ from typing import Any, Dict, List, Optional
 from gspread.cell import Cell
 
 import bot_shop as shop
+
+logger = logging.getLogger(__name__)
+
+
+_SECRET_FIELDS = ("secret", "deliver_text")
+
+
+def _mask_secret(value: str) -> str:
+    if not value:
+        return ""
+    s = str(value)
+    if len(s) <= 4:
+        return "•" * len(s)
+    return f"{s[:2]}{'•' * max(4, len(s) - 4)}{s[-2:]}"
+
+
+def _redact_rows(rows: List[Dict[str, Any]], fields: tuple = _SECRET_FIELDS) -> List[Dict[str, Any]]:
+    out = []
+    for row in rows:
+        copy = dict(row)
+        for field in fields:
+            if field in copy and copy[field]:
+                copy[field] = _mask_secret(copy[field])
+        out.append(copy)
+    return out
 
 def _records(ws) -> List[Dict[str, str]]:
     return shop.get_all_records(ws) if ws else []
@@ -65,7 +92,7 @@ def _revenue_period_stats(orders: List[Dict[str, Any]]) -> Dict[str, Dict[str, i
     return buckets
 
 
-def snapshot(limit: int = 100, pool_limit: int = 2000) -> Dict[str, Any]:
+def snapshot(limit: int = 100, pool_limit: int = 2000, reveal_secrets: bool = False) -> Dict[str, Any]:
     shop.init_sheets()
     products = shop.load_products()
     pool = _records(shop._ws_pool)
@@ -155,9 +182,18 @@ def snapshot(limit: int = 100, pool_limit: int = 2000) -> Dict[str, Any]:
 
     revenue_stats = _revenue_period_stats(orders)
 
+    pool_out = pool[:pool_limit]
+    deliveries_out = delivery_rows[:limit]
+    fulfillments_out = fulfillments[:limit]
+    if not reveal_secrets:
+        pool_out = _redact_rows(pool_out)
+        deliveries_out = _redact_rows(deliveries_out)
+        fulfillments_out = _redact_rows(fulfillments_out)
+
     return {
         "generated_at": shop.now_str(),
         "timezone": shop.APP_TIMEZONE,
+        "secrets_revealed": bool(reveal_secrets),
         "summary": {
             "orders": len(orders),
             "revenue": revenue_stats["today"]["revenue"],
@@ -172,10 +208,10 @@ def snapshot(limit: int = 100, pool_limit: int = 2000) -> Dict[str, Any]:
         "products": product_rows,
         "orders": orders[:limit],
         "users": user_rows[:limit],
-        "pool": pool[:pool_limit],
+        "pool": pool_out,
         "reservations": reservations[:limit],
-        "fulfillments": fulfillments[:limit],
-        "deliveries": delivery_rows[:limit],
+        "fulfillments": fulfillments_out,
+        "deliveries": deliveries_out,
     }
 
 
@@ -186,12 +222,14 @@ def save_product(data: Dict[str, Any]) -> Dict[str, Any]:
         raise RuntimeError("PRODUCTS thieu header")
 
     product_id = (data.get("product_id") or "").strip()
-    stock_code = (data.get("stock_code") or "").strip()
+    stock_code = shop.normalize_stock_code(data.get("stock_code") or "")
     name = (data.get("name") or "").strip()
     if not product_id:
         product_id = stock_code or f"P{shop.now_dt().strftime('%Y%m%d%H%M%S')}"
     if not stock_code or not name:
         raise ValueError("Can co name va stock_code")
+    if shop.normalize_int(data.get("price"), 0) <= 0:
+        raise ValueError("Gia phai > 0")
 
     payload = {
         "product_id": product_id,
@@ -407,3 +445,31 @@ def notifications_mark_read(data: Dict[str, Any]) -> Dict[str, Any]:
 def notifications_clear_all() -> Dict[str, Any]:
     n = shop.clear_dashboard_notifications_sync()
     return {"deleted": n}
+
+
+def run_backup() -> Dict[str, Any]:
+    """Backup tất cả worksheet vào thư mục `backups/` (gzip JSON).
+    Trả về danh sách file đã backup. Có thể gọi qua cron-job.org để chạy hằng ngày."""
+    from backup_manager import BackupManager
+
+    gsheet_id = os.getenv("GSHEET_ID", "").strip()
+    if not gsheet_id:
+        raise RuntimeError("GSHEET_ID is not configured")
+    gsvc_json = os.getenv("GSVC_JSON", "service_account.json")
+    backup_dir = os.getenv("BACKUP_DIR", "backups")
+
+    manager = BackupManager(gsheet_id=gsheet_id, gsvc_json=gsvc_json, backup_dir=backup_dir)
+    files = manager.backup_all_sheets(compress=True)
+    keep_days = int(os.getenv("BACKUP_KEEP_DAYS", "14"))
+    try:
+        deleted = manager.cleanup_old_backups(keep_days=keep_days)
+    except Exception as e:
+        logger.warning("backup cleanup failed: %s", e)
+        deleted = 0
+    return {
+        "ok": True,
+        "backed_up": [os.path.basename(f) for f in files],
+        "count": len(files),
+        "cleaned_up": deleted,
+        "keep_days": keep_days,
+    }

@@ -37,7 +37,7 @@ export function Sidebar({ active, notifyAlerts = 0, onChange, onLogout }: Sideba
     <nav className="flex flex-col h-full">
       <div className="px-4 py-4 border-b border-border">
         <p className="text-sm font-semibold">VM STORE</p>
-        <p className="text-xs text-muted-foreground truncate">bot-telegram-1-mgsf</p>
+        <p className="text-xs text-muted-foreground truncate">Admin Dashboard</p>
       </div>
 
       <div className="flex-1 py-3 space-y-0.5 overflow-y-auto">

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import secrets
 import threading
 import time
 
@@ -36,6 +37,15 @@ logging.getLogger("uvicorn.access").addFilter(_AccessLogFilter())
 
 app = FastAPI()
 telegram_app = None
+
+_PAYMENT_TASKS: set[asyncio.Task] = set()
+
+
+def _track_task(task: asyncio.Task) -> None:
+    _PAYMENT_TASKS.add(task)
+    task.add_done_callback(_PAYMENT_TASKS.discard)
+
+
 register_admin_routes(app)
 register_shop_api_routes(app)
 
@@ -55,16 +65,23 @@ def telegram_webhook_path() -> str:
     return "/webhook/telegram"
 
 
+def telegram_webhook_secret() -> str:
+    return os.environ.get("TELEGRAM_WEBHOOK_SECRET", "").strip()
+
+
 @app.post("/webhook/sepay")
 async def sepay_webhook(request: Request):
     if not verify_sepay_auth(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     try:
         payload = await request.json()
-        asyncio.create_task(process_payment(payload))
+        _track_task(asyncio.create_task(process_payment(payload)))
         return {"ok": True, "queued": True}
+    except HTTPException:
+        raise
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        logger.exception("sepay_webhook error")
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/jobs/expire")
@@ -72,8 +89,14 @@ async def jobs_expire(request: Request):
     sepay_key = os.environ.get("SEPAY_API_KEY", "").strip()
     if sepay_key:
         key = (request.headers.get("x-api-key") or "").strip()
-        if key != sepay_key:
+        if not key or not secrets.compare_digest(key, sepay_key):
             raise HTTPException(status_code=401, detail="Unauthorized")
+    else:
+        if os.environ.get("ALLOW_PUBLIC_EXPIRE", "").strip() != "1":
+            raise HTTPException(
+                status_code=503,
+                detail="SEPAY_API_KEY chưa cấu hình. Bật ALLOW_PUBLIC_EXPIRE=1 nếu thực sự muốn mở.",
+            )
     return await expire_scan_once()
 
 
@@ -81,6 +104,13 @@ async def jobs_expire(request: Request):
 async def telegram_webhook(request: Request):
     if telegram_app is None:
         raise HTTPException(status_code=503, detail="Telegram app is not ready")
+
+    expected_secret = telegram_webhook_secret()
+    if expected_secret:
+        provided = (request.headers.get("X-Telegram-Bot-Api-Secret-Token") or "").strip()
+        if not provided or not secrets.compare_digest(provided, expected_secret):
+            raise HTTPException(status_code=401, detail="Bad secret token")
+
     payload = await request.json()
     update = Update.de_json(payload, telegram_app.bot)
     await telegram_app.process_update(update)
@@ -99,11 +129,28 @@ async def ping():
 
 @app.get("/health")
 async def health():
-    return {
-        "ok": True,
+    """Deep health check: verify Telegram + Sheets reachable."""
+    issues: list[str] = []
+    if telegram_app is None and public_base_url():
+        issues.append("telegram_app_not_initialized")
+    try:
+        import bot_shop as _shop  # local import to avoid cold-start cost on /ping
+
+        _shop.init_sheets()
+        if _shop._ws_orders is None:
+            issues.append("sheets_not_ready")
+    except Exception as e:
+        issues.append(f"sheets_error:{type(e).__name__}")
+
+    body = {
+        "ok": not issues,
         "telegram": "webhook" if telegram_app else "polling",
         "ts": int(time.time()),
     }
+    if issues:
+        body["issues"] = issues
+        raise HTTPException(status_code=503, detail=body)
+    return body
 
 
 @app.head("/health")
@@ -153,14 +200,34 @@ async def startup_telegram_webhook():
     await telegram_app.initialize()
     set_telegram_bot(telegram_app.bot)
     await setup_bot_commands(telegram_app)
-    await telegram_app.bot.set_webhook(webhook_url, drop_pending_updates=True)
+
+    secret = telegram_webhook_secret()
+    set_webhook_kwargs = {"url": webhook_url, "drop_pending_updates": True}
+    if secret:
+        set_webhook_kwargs["secret_token"] = secret
+    await telegram_app.bot.set_webhook(**set_webhook_kwargs)
     await telegram_app.start()
-    logger.info("Telegram webhook is active: %s", webhook_url)
+    logger.info(
+        "Telegram webhook is active: %s (secret_token: %s)",
+        webhook_url,
+        "yes" if secret else "no",
+    )
 
 
 @app.on_event("shutdown")
 async def shutdown_telegram_webhook():
     global telegram_app
+
+    if _PAYMENT_TASKS:
+        logger.info("Waiting for %d in-flight payment tasks...", len(_PAYMENT_TASKS))
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*list(_PAYMENT_TASKS), return_exceptions=True),
+                timeout=15.0,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("Some payment tasks did not finish within grace period")
+
     if telegram_app is None:
         return
     await telegram_app.stop()

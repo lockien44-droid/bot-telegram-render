@@ -90,11 +90,11 @@ def parse_admin_ids(raw: str) -> set[int]:
     return ids
 
 
-ADMIN_IDS = parse_admin_ids(os.getenv("ADMIN_IDS", "5322953111"))
+ADMIN_IDS = parse_admin_ids(os.getenv("ADMIN_IDS", ""))
 
 ORDER_TTL_SECONDS = int(os.getenv("ORDER_TTL_SECONDS", "300"))  # 5 phút
-# Đơn hiển thị cho khách trong menu "Đơn hàng" — chỉ đã giao thành công
-USER_ORDER_VISIBLE_STATUSES = {"DELIVERED"}
+# Đơn hiển thị cho khách: giao thành công + đang chờ thanh toán (PAID/PENDING)
+USER_ORDER_VISIBLE_STATUSES = {"DELIVERED", "PAID", "PENDING"}
 APP_TIMEZONE = os.getenv("APP_TIMEZONE", "Asia/Ho_Chi_Minh").strip() or "Asia/Ho_Chi_Minh"
 LOCAL_TZ = ZoneInfo(APP_TIMEZONE)
 
@@ -1345,12 +1345,41 @@ def welcome_text(user_fullname: str) -> str:
         "📌 *Lệnh nhanh:*\n\n"
         "/shop - Xem sản phẩm\n\n"
         "/orders - Đơn hàng của bạn\n\n"
-        "/support - Hỗ trợ"
+        "/support - Hỗ trợ\n\n"
+        "/help - Hướng dẫn"
+    )
+
+
+def help_text() -> str:
+    ttl_min = max(1, ORDER_TTL_SECONDS // 60)
+    return (
+        "📖 *HƯỚNG DẪN SỬ DỤNG*\n\n"
+        "*1) Mua hàng*\n"
+        "• Bấm /shop hoặc nút 🛍 Sản phẩm.\n"
+        "• Chọn sản phẩm và số lượng → bấm *Mua*.\n"
+        "• Bot gửi mã QR / số tài khoản để chuyển khoản.\n\n"
+        "*2) Thanh toán*\n"
+        f"• Chuyển khoản đúng số tiền + *nội dung là mã đơn* trong vòng *{ttl_min} phút*.\n"
+        "• Bot tự động giao hàng khi nhận tiền (vài giây).\n"
+        "• Nếu lâu chưa nhận, bấm *Tôi đã thanh toán* trên đơn.\n\n"
+        "*3) Xem đơn*\n"
+        "• /orders — danh sách đơn hàng của bạn (giao thành công, đang chờ, hết hạn).\n\n"
+        "*4) Hỗ trợ*\n"
+        "• /support — liên hệ admin nếu gặp vấn đề thanh toán hoặc giao hàng."
+    )
+
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        help_text(),
+        parse_mode="Markdown",
+        disable_web_page_preview=True,
+        reply_markup=main_menu_keyboard(),
     )
 
 
 async def setup_bot_commands(application: Application) -> None:
-    """Menu lệnh Telegram — không có /game."""
+    """Menu lệnh Telegram — không có /game, không có /mail, /2fa cho user thường."""
     bot = application.bot
     await bot.delete_my_commands()
     await bot.set_my_commands([
@@ -1358,8 +1387,9 @@ async def setup_bot_commands(application: Application) -> None:
         BotCommand("shop", "Xem sản phẩm"),
         BotCommand("orders", "Đơn hàng của bạn"),
         BotCommand("support", "Hỗ trợ"),
+        BotCommand("help", "Hướng dẫn"),
     ])
-    logger.info("✅ Đã cập nhật menu lệnh bot (không có /game)")
+    logger.info("✅ Đã cập nhật menu lệnh bot")
 
 
 
@@ -1623,7 +1653,23 @@ async def send_2fa_from_text(update: Update, context: ContextTypes.DEFAULT_TYPE,
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=quick_actions_kb())
 
 
+def _is_admin_user(update: Update) -> bool:
+    user = update.effective_user
+    return bool(user and user.id in ADMIN_IDS)
+
+
+async def _deny_non_admin(update: Update) -> None:
+    if update.message:
+        await update.message.reply_text(
+            "Chức năng này chỉ dành cho admin. Nếu cần hỗ trợ, dùng /support.",
+            reply_markup=quick_actions_kb(),
+        )
+
+
 async def cmd_2fa(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin_user(update):
+        return await _deny_non_admin(update)
+
     raw = " ".join(context.args).strip()
     if not raw and update.message.reply_to_message:
         raw = (update.message.reply_to_message.text or "").strip()
@@ -1714,6 +1760,9 @@ async def read_mail_again(chat_id: int, user_id: int, context: ContextTypes.DEFA
 
 
 async def cmd_mail(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin_user(update):
+        return await _deny_non_admin(update)
+
     raw = " ".join(context.args).strip()
     if not raw and update.message.reply_to_message:
         raw = (update.message.reply_to_message.text or "").strip()
@@ -2754,7 +2803,7 @@ async def show_orders(user_id: int, context: ContextTypes.DEFAULT_TYPE):
     if not orders:
         await context.bot.send_message(
             chat_id=user_id,
-            text="📦 *ĐƠN HÀNG ĐÃ MUA*\n\nChưa có đơn giao thành công.\n\nBấm 🛍 Sản phẩm để mua.",
+            text="📦 *ĐƠN HÀNG CỦA BẠN*\n\nChưa có đơn nào.\n\nBấm 🛍 Sản phẩm để mua.",
             parse_mode="Markdown",
             reply_markup=main_menu_keyboard(),
         )
@@ -2763,7 +2812,15 @@ async def show_orders(user_id: int, context: ContextTypes.DEFAULT_TYPE):
     products, _ = await refresh_catalog_cache()
     name_by_code = {p["stock_code"]: p["name"] for p in products}
 
-    lines = ["📦 *ĐƠN HÀNG ĐÃ MUA*\n", "5 đơn giao thành công gần nhất:\n", "━━━━━━━━━━━━━━━━"]
+    status_icon = {
+        "DELIVERED": "✅ Đã giao",
+        "PAID": "💰 Đã thanh toán (đang giao)",
+        "PENDING": "⏳ Chờ thanh toán",
+        "EXPIRED": "⌛ Hết hạn",
+        "CANCELLED": "❌ Đã hủy",
+    }
+
+    lines = ["📦 *ĐƠN HÀNG CỦA BẠN*\n", "5 đơn gần nhất:\n", "━━━━━━━━━━━━━━━━"]
 
     for o in orders[:5]:
         oid = o.get("order_id", "")
@@ -2772,17 +2829,22 @@ async def show_orders(user_id: int, context: ContextTypes.DEFAULT_TYPE):
         total = normalize_int(o.get("total"), 0)
         created = o.get("created_at", "")
         product_name = name_by_code.get(sc) or sc
+        status_raw = (o.get("status") or "").strip().upper()
+        status_label = status_icon.get(status_raw, status_raw or "—")
 
         lines.append(
             f"\n`{oid}`\n"
             f"📦 *{product_name}*\n"
             f"Mã kho: `{sc}` | SL: *{qty}*\n"
-            f"Tổng: *{fmt_price(total)}*\n"
+            f"Tổng: *{fmt_price(total)}* | {status_label}\n"
             f"📅 {created}"
         )
-        items_block = await _purchased_items_block(o)
-        if items_block:
-            lines.append(items_block)
+        if status_raw == "DELIVERED":
+            items_block = await _purchased_items_block(o)
+            if items_block:
+                lines.append(items_block)
+        elif status_raw == "PENDING":
+            lines.append("ℹ️ _Chuyển khoản đúng nội dung mã đơn để bot tự giao._")
         lines.append("━━━━━━━━━━━━━━━━")
 
     text = "\n".join(lines)
@@ -2831,8 +2893,12 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     menu_text = normalize_menu_text(text)
 
     if looks_like_mail_account(text):
+        if not _is_admin_user(update):
+            return await _deny_non_admin(update)
         return await read_mail_from_text(update, text)
     if looks_like_totp_secret(text):
+        if not _is_admin_user(update):
+            return await _deny_non_admin(update)
         return await send_2fa_from_text(update, context, text)
 
     if text == BTN_PRODUCTS or "sản phẩm" in menu_text or "san pham" in menu_text:
@@ -3091,6 +3157,7 @@ def configure_application(app: Application) -> Application:
     app.add_handler(CommandHandler("shop", cmd_shop))
     app.add_handler(CommandHandler("orders", cmd_orders))
     app.add_handler(CommandHandler("support", cmd_support))
+    app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("hangve", cmd_hangve))
     app.add_handler(CommandHandler("mail", cmd_mail))
     app.add_handler(CommandHandler("2fa", cmd_2fa))

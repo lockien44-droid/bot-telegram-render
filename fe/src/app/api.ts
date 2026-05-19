@@ -3,6 +3,7 @@ export type AnyRow = Record<string, any>;
 export interface AdminSnapshot {
   generated_at: string;
   timezone: string;
+  secrets_revealed?: boolean;
   summary: {
     orders: number;
     revenue: number;
@@ -27,12 +28,30 @@ export interface AdminSnapshot {
   deliveries?: AnyRow[];
 }
 
+export class AdminUnauthorizedError extends Error {
+  constructor(message = "Unauthorized") {
+    super(message);
+    this.name = "AdminUnauthorizedError";
+  }
+}
+
+let onUnauthorized: (() => void) | null = null;
+
+export function setAdminUnauthorizedHandler(handler: (() => void) | null) {
+  onUnauthorized = handler;
+}
+
 export async function adminApi<T>(path: string, key: string, options: RequestInit = {}): Promise<T> {
-  const sep = path.includes("?") ? "&" : "?";
-  const res = await fetch(`${path}${sep}key=${encodeURIComponent(key)}`, {
-    headers: { "content-type": "application/json", ...(options.headers || {}) },
-    ...options,
-  });
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    "x-admin-key": key,
+    ...(options.headers as Record<string, string> | undefined),
+  };
+  const res = await fetch(path, { ...options, headers });
+  if (res.status === 401) {
+    onUnauthorized?.();
+    throw new AdminUnauthorizedError();
+  }
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text || `HTTP ${res.status}`);
