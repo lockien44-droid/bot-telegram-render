@@ -1332,10 +1332,13 @@ def remove_reply_keyboard() -> ReplyKeyboardRemove:
 
 
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
-    """Bàn phím cố định ở dưới — chỉ giữ Sản phẩm và Hỗ trợ."""
+    """Bàn phím cố định ở dưới — chỉ giữ Sản phẩm và Hỗ trợ.
+    is_persistent=True + one_time_keyboard=False để Telegram client luôn hiện
+    keyboard, không cho user tắt được."""
     return ReplyKeyboardMarkup(
         [[KeyboardButton(BTN_PRODUCTS), KeyboardButton(BTN_SUPPORT)]],
         resize_keyboard=True,
+        one_time_keyboard=False,
         is_persistent=True,
     )
 
@@ -1542,20 +1545,22 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     schedule_upsert_user(update.effective_chat.id, user.username or "", user.full_name or "")
 
-    # 1) Đặt lại ReplyKeyboard ở dưới — chỉ còn Sản phẩm và Hỗ trợ
-    try:
-        kb_msg = await update.message.reply_text("⌨️", reply_markup=main_menu_keyboard())
-        await kb_msg.delete()
-    except Exception:
-        pass
-
-    # 2) Gửi welcome + inline keyboard chính
+    # 1) Welcome chính (kèm inline keyboard)
     await update.message.reply_text(
         welcome_text(user.full_name),
         parse_mode="Markdown",
         disable_web_page_preview=True,
         reply_markup=start_inline_kb(),
     )
+
+    # 2) Đặt ReplyKeyboard cố định ở dưới (Sản phẩm + Hỗ trợ) — tin này KHÔNG xóa
+    #    để Telegram giữ keyboard luôn hiển thị (is_persistent=True).
+    await update.message.reply_text(
+        "👇 *Menu nhanh*",
+        parse_mode="Markdown",
+        reply_markup=main_menu_keyboard(),
+    )
+
     await notify_user_start_event(
         context,
         user.id,
