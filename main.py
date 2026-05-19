@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import threading
+import time
 
 from dotenv import load_dotenv
 
@@ -80,6 +81,20 @@ async def health_check():
 @app.get("/ping")
 async def ping():
     return "ok"
+
+
+@app.get("/health")
+async def health():
+    return {
+        "ok": True,
+        "telegram": "webhook" if telegram_app else "polling",
+        "ts": int(time.time()),
+    }
+
+
+@app.head("/health")
+async def health_head():
+    return None
 
 
 @app.head("/")
