@@ -447,6 +447,14 @@ def notifications_clear_all() -> Dict[str, Any]:
     return {"deleted": n}
 
 
+def notifications_delete(data: Dict[str, Any]) -> Dict[str, Any]:
+    ids = data.get("ids")
+    if not isinstance(ids, list) or not ids:
+        raise ValueError("Cần ids (mảng id thông báo cần xóa)")
+    n = shop.delete_dashboard_notifications_sync(ids)
+    return {"deleted": n}
+
+
 def run_backup() -> Dict[str, Any]:
     """Backup tất cả worksheet vào thư mục `backups/` (gzip JSON).
     Trả về danh sách file đã backup. Có thể gọi qua cron-job.org để chạy hằng ngày."""

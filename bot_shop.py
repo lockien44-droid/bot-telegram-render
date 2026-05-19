@@ -940,6 +940,40 @@ def mark_dashboard_notifications_read_sync(ids: Optional[List[str]] = None, mark
     return updated
 
 
+def delete_dashboard_notifications_sync(ids: Optional[List[str]] = None) -> int:
+    """Xóa các dòng notification theo ``id``. Trả về số dòng đã xóa."""
+    init_sheets()
+    _ensure_notifications_worksheet()
+    if not _ws_notif:
+        return 0
+    want = {x.strip() for x in (ids or []) if x and str(x).strip()}
+    if not want:
+        return 0
+    vals = _ws_notif.get_all_values()
+    if len(vals) < 2:
+        return 0
+    hmap = {str(h).strip().lower(): i for i, h in enumerate(vals[0], start=1)}
+    c_id = hmap.get("id")
+    if not c_id:
+        return 0
+    rows_to_delete: List[int] = []
+    for ri in range(2, len(vals) + 1):
+        row = vals[ri - 1]
+        oid = row[c_id - 1].strip() if c_id - 1 < len(row) else ""
+        if oid in want:
+            rows_to_delete.append(ri)
+    if not rows_to_delete:
+        return 0
+    deleted = 0
+    for ri in sorted(rows_to_delete, reverse=True):
+        try:
+            _ws_notif.delete_rows(ri)
+            deleted += 1
+        except Exception as e:
+            logger.warning("delete_dashboard_notifications row %s failed: %s", ri, e)
+    return deleted
+
+
 def clear_dashboard_notifications_sync() -> int:
     init_sheets()
     _ensure_notifications_worksheet()

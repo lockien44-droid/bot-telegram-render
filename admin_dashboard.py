@@ -12,6 +12,7 @@ from admin_services import (
     add_stock,
     delete_product,
     notifications_clear_all,
+    notifications_delete,
     notifications_list,
     notifications_mark_read,
     release_holds,
@@ -486,6 +487,12 @@ def register_admin_routes(app: FastAPI) -> None:
     async def admin_notifications_clear(request: Request):
         require_admin(request)
         return await asyncio.to_thread(notifications_clear_all)
+
+    @app.post("/admin/api/notifications/delete")
+    async def admin_notifications_delete(request: Request):
+        require_admin(request)
+        data = await request.json()
+        return await asyncio.to_thread(notifications_delete, data)
 
     @app.get("/admin/api/snapshot")
     async def admin_snapshot(

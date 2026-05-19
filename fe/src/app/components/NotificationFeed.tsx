@@ -1,6 +1,7 @@
 import { Bell, BellOff, PackageCheck, PackagePlus, PackageX, Clock, Banknote, UserPlus } from "lucide-react";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
+import { Checkbox } from "./ui/checkbox";
 import { NOTIFY_META, type NotifyKind, type OrderNotification } from "../notifications";
 
 const KIND_ICON: Record<NotifyKind, React.ReactNode> = {
@@ -31,6 +32,10 @@ interface FeedProps {
   compact?: boolean;
   emptyHint?: string;
   onOpenOrder: (orderId: string, status?: string) => void;
+  /** Bật checkbox chọn từng thông báo (màn Thông báo). */
+  selectable?: boolean;
+  selectedIds?: Set<string>;
+  onToggleSelect?: (id: string) => void;
 }
 
 export function NotificationFeed({
@@ -39,6 +44,9 @@ export function NotificationFeed({
   compact = false,
   emptyHint = "Đơn mới, huỷ, hết hạn hoặc đã giao sẽ hiện tại đây.",
   onOpenOrder,
+  selectable = false,
+  selectedIds,
+  onToggleSelect,
 }: FeedProps) {
   const visible = limit ? items.slice(0, limit) : items;
 
@@ -62,41 +70,87 @@ export function NotificationFeed({
             ? item.message.trim()
             : [item.stockCode, item.total, item.orderId].filter(Boolean).join(" · ");
         const openOrder = item.kind !== "start" && Boolean(item.orderId);
+        const checked = selectable && Boolean(selectedIds?.has(item.id));
+        const rowClass = `w-full text-left rounded-lg border bg-white transition-shadow ${
+          openOrder && !selectable ? "hover:shadow-md cursor-pointer" : "cursor-default"
+        } ${compact ? "p-3" : "p-4"} ${
+          checked
+            ? "border-primary/50 bg-primary/5 ring-1 ring-primary/30"
+            : item.read
+              ? "border-border opacity-80"
+              : item.kind === "start"
+                ? "border-sky-200 bg-sky-50/40"
+                : "border-emerald-200 bg-emerald-50/40"
+        }`;
+
+        const body = (
+          <div className={`flex gap-2.5 ${selectable ? "items-start" : ""}`}>
+            {selectable && onToggleSelect && (
+              <div
+                className="shrink-0 pt-0.5"
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => e.stopPropagation()}
+              >
+                <Checkbox
+                  checked={checked}
+                  onCheckedChange={() => onToggleSelect(item.id)}
+                  aria-label={`Chọn thông báo ${lineTitle}`}
+                />
+              </div>
+            )}
+            <div
+              className={`shrink-0 rounded-full bg-white border flex items-center justify-center ${
+                compact ? "w-8 h-8" : "w-9 h-9"
+              }`}
+            >
+              {KIND_ICON[item.kind]}
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className={`font-semibold ${compact ? "text-xs" : "text-sm"}`}>{lineTitle}</span>
+                {!item.read && (
+                  <span className="text-[10px] uppercase font-bold text-emerald-700 bg-emerald-100 px-1 py-0.5 rounded">
+                    Mới
+                  </span>
+                )}
+              </div>
+              <p className={`text-muted-foreground truncate ${compact ? "text-xs" : "text-sm"}`}>
+                {lineDetail}
+              </p>
+              <p className="text-[11px] text-muted-foreground mt-0.5">{formatTime(item.at)}</p>
+            </div>
+          </div>
+        );
+
+        if (selectable) {
+          return (
+            <div
+              key={item.id}
+              role="button"
+              tabIndex={0}
+              className={rowClass}
+              onClick={() => onToggleSelect?.(item.id)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  onToggleSelect?.(item.id);
+                }
+              }}
+            >
+              {body}
+            </div>
+          );
+        }
+
         return (
           <button
             key={item.id}
             type="button"
             onClick={() => openOrder && onOpenOrder(item.orderId, item.status)}
             disabled={!openOrder}
-            className={`w-full text-left rounded-lg border bg-white transition-shadow ${
-              openOrder ? "hover:shadow-md cursor-pointer" : "cursor-default"
-            } ${compact ? "p-3" : "p-4"} ${
-              item.read ? "border-border opacity-80" : item.kind === "start" ? "border-sky-200 bg-sky-50/40" : "border-emerald-200 bg-emerald-50/40"
-            }`}
+            className={rowClass}
           >
-            <div className="flex gap-2.5">
-              <div
-                className={`shrink-0 rounded-full bg-white border flex items-center justify-center ${
-                  compact ? "w-8 h-8" : "w-9 h-9"
-                }`}
-              >
-                {KIND_ICON[item.kind]}
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <span className={`font-semibold ${compact ? "text-xs" : "text-sm"}`}>{lineTitle}</span>
-                  {!item.read && (
-                    <span className="text-[10px] uppercase font-bold text-emerald-700 bg-emerald-100 px-1 py-0.5 rounded">
-                      Mới
-                    </span>
-                  )}
-                </div>
-                <p className={`text-muted-foreground truncate ${compact ? "text-xs" : "text-sm"}`}>
-                  {lineDetail}
-                </p>
-                <p className="text-[11px] text-muted-foreground mt-0.5">{formatTime(item.at)}</p>
-              </div>
-            </div>
+            {body}
           </button>
         );
       })}
@@ -141,4 +195,3 @@ export function NotificationFeedHeader({ unread, total, onViewAll, onMarkAllRead
     </div>
   );
 }
-

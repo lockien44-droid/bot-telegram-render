@@ -188,16 +188,28 @@ export default function App() {
 
   const clearAllNotifications = useCallback(async () => {
     if (!adminKey) return;
-    try {
-      await adminApi("/admin/api/notifications/clear", adminKey, { method: "POST", body: "{}" });
-      setNotifications([]);
-      prevNotifIdsRef.current = new Set();
-      notifHydratedRef.current = false;
-      await fetchNotifications(adminKey);
-    } catch {
-      toast.error("Không xóa được thông báo trên sheet");
-    }
+    await adminApi("/admin/api/notifications/clear", adminKey, { method: "POST", body: "{}" });
+    setNotifications([]);
+    prevNotifIdsRef.current = new Set();
+    notifHydratedRef.current = false;
+    await fetchNotifications(adminKey);
   }, [adminKey, fetchNotifications]);
+
+  const deleteSelectedNotifications = useCallback(
+    async (ids: string[]) => {
+      if (!adminKey || !ids.length) return;
+      await adminApi("/admin/api/notifications/delete", adminKey, {
+        method: "POST",
+        body: JSON.stringify({ ids }),
+      });
+      setNotifications((prev) => prev.filter((n) => !ids.includes(n.id)));
+      prevNotifIdsRef.current = new Set(
+        [...prevNotifIdsRef.current].filter((id) => !ids.includes(id)),
+      );
+      await fetchNotifications(adminKey);
+    },
+    [adminKey, fetchNotifications],
+  );
 
   if (!isAuthenticated) {
     return <AdminLogin onLogin={handleLogin} />;
@@ -237,6 +249,7 @@ export default function App() {
             items={notifications}
             onMarkAllRead={markAllNotificationsRead}
             onClearAll={clearAllNotifications}
+            onDeleteSelected={deleteSelectedNotifications}
             onOpenOrder={(orderId, status) => {
               setOrderPreset({ orderId, status, nonce: Date.now() });
               setSection("orders");
