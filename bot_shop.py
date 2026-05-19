@@ -3528,15 +3528,58 @@ def stock_update_keyboard(product_id: Optional[str]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
+async def _log_broadcast_to_dashboard(
+    event: str,
+    title: str,
+    result: Dict[str, Any],
+    extra: str = "",
+) -> None:
+    """Ghi 1 dòng vào sheet ``notifications`` để dashboard hiện kết quả broadcast.
+
+    ``result`` là dict trả về của các hàm broadcast (có thể chứa ``ok``,
+    ``fail``, ``recipients``, ``skipped``, ``reason``, ``error``).
+    """
+    try:
+        ok = int(result.get("ok") or 0)
+        fail = int(result.get("fail") or 0)
+        recipients = int(result.get("recipients") or 0)
+        if result.get("skipped"):
+            reason = result.get("reason") or "skipped"
+            msg = f"Bỏ qua broadcast ({reason})"
+        elif result.get("error"):
+            msg = f"Lỗi broadcast: {result.get('error')}  ·  Đã gửi {ok}/{recipients}"
+        else:
+            msg = f"Đã gửi {ok}/{recipients} user (đã /start)  ·  Lỗi {fail}"
+        if extra:
+            msg = f"{extra}  ·  {msg}"
+        await gs_call(append_dashboard_notification_simple_sync, event, title, msg, "")
+    except Exception as e:
+        logger.warning("log broadcast '%s' to notifications failed: %s", event, e)
+
+
 async def broadcast_stock_update(stock_code: str, added_count: int) -> Dict[str, Any]:
-    """Gửi thông báo nhập kho tới user trong USERS + admin (ADMIN_IDS)."""
+    """Gửi thông báo nhập kho tới user trong USERS + admin (ADMIN_IDS).
+
+    Mọi nhánh kết thúc đều ghi 1 dòng vào sheet ``notifications`` (mục Thông báo
+    của dashboard) kèm số user đã /start đã nhận được tin.
+    """
     if added_count <= 0:
-        return {"ok": 0, "fail": 0, "skipped": True, "reason": "added_zero"}
+        result = {"ok": 0, "fail": 0, "skipped": True, "reason": "added_zero"}
+        await _log_broadcast_to_dashboard(
+            "broadcast_stock", "Nhập kho",
+            result, extra=f"{stock_code} (+{added_count})",
+        )
+        return result
 
     token = (BOT_TOKEN or "").strip()
     if not token or token == "PUT_YOUR_BOT_TOKEN_HERE":
         logger.warning("broadcast_stock_update: BOT_TOKEN chưa cấu hình")
-        return {"ok": 0, "fail": 0, "skipped": True, "reason": "no_bot_token"}
+        result = {"ok": 0, "fail": 0, "skipped": True, "reason": "no_bot_token"}
+        await _log_broadcast_to_dashboard(
+            "broadcast_stock", "Nhập kho",
+            result, extra=f"{stock_code} (+{added_count})",
+        )
+        return result
 
     await refresh_catalog_cache(force=True)
     product = await find_product_by_stock_code(stock_code)
@@ -3561,9 +3604,13 @@ async def broadcast_stock_update(stock_code: str, added_count: int) -> Dict[str,
             seen.add(admin_id)
             recipients.append(admin_id)
 
+    extra = f"{product_name} (+{added_count}, tổng {total_ready})"
+
     if not recipients:
         logger.warning("broadcast_stock_update: không có người nhận (USERS trống và ADMIN_IDS rỗng)")
-        return {"ok": 0, "fail": 0, "skipped": True, "reason": "no_recipients"}
+        result = {"ok": 0, "fail": 0, "skipped": True, "reason": "no_recipients"}
+        await _log_broadcast_to_dashboard("broadcast_stock", "Nhập kho", result, extra=extra)
+        return result
 
     ok = fail = 0
     try:
@@ -3584,13 +3631,17 @@ async def broadcast_stock_update(stock_code: str, added_count: int) -> Dict[str,
                     logger.warning("broadcast_stock_update fail chat_id=%s err=%s", cid, e)
     except Exception as e:
         logger.exception("broadcast_stock_update bot session failed: %s", e)
-        return {"ok": 0, "fail": len(recipients), "error": str(e)}
+        result = {"ok": 0, "fail": len(recipients), "error": str(e)}
+        await _log_broadcast_to_dashboard("broadcast_stock", "Nhập kho", result, extra=extra)
+        return result
 
     logger.info(
         "broadcast_stock_update stock=%s added=%s total_ready=%s recipients=%s sent=%s fail=%s",
         stock_code, added_count, total_ready, len(recipients), ok, fail,
     )
-    return {"ok": ok, "fail": fail, "recipients": len(recipients)}
+    result = {"ok": ok, "fail": fail, "recipients": len(recipients)}
+    await _log_broadcast_to_dashboard("broadcast_stock", "Nhập kho", result, extra=extra)
+    return result
 
 
 # ================== BROADCAST: Cập nhật kho hàng (full snapshot) ==================
@@ -3652,10 +3703,21 @@ async def broadcast_inventory_update(
     only_in_stock: bool = True,
     include_admins: bool = True,
 ) -> Dict[str, Any]:
-    """Gửi snapshot tồn kho hiện tại tới mọi user đã /start (USERS) + admin (tuỳ chọn)."""
+    """Gửi snapshot tồn kho hiện tại tới mọi user đã /start (USERS) + admin (tuỳ chọn).
+
+    Kết quả mọi nhánh đều ghi 1 dòng vào sheet ``notifications`` để dashboard
+    hiện số user đã /start đã nhận được tin.
+    """
+    mode_label = "Chỉ còn hàng" if only_in_stock else "Toàn bộ"
+    extra = f"Chế độ: {mode_label}"
+
     token = (BOT_TOKEN or "").strip()
     if not token or token == "PUT_YOUR_BOT_TOKEN_HERE":
-        return {"ok": 0, "fail": 0, "skipped": True, "reason": "no_bot_token"}
+        result = {"ok": 0, "fail": 0, "skipped": True, "reason": "no_bot_token"}
+        await _log_broadcast_to_dashboard(
+            "broadcast_inventory", "Cập nhật kho", result, extra=extra,
+        )
+        return result
 
     products, ready_map = await refresh_catalog_cache(force=True)
     text = build_inventory_broadcast_text(products, ready_map, only_in_stock=only_in_stock)
@@ -3674,7 +3736,11 @@ async def broadcast_inventory_update(
                 recipients.append(admin_id)
 
     if not recipients:
-        return {"ok": 0, "fail": 0, "skipped": True, "reason": "no_recipients"}
+        result = {"ok": 0, "fail": 0, "skipped": True, "reason": "no_recipients"}
+        await _log_broadcast_to_dashboard(
+            "broadcast_inventory", "Cập nhật kho", result, extra=extra,
+        )
+        return result
 
     ok = fail = 0
     try:
@@ -3695,13 +3761,21 @@ async def broadcast_inventory_update(
                     logger.warning("broadcast_inventory fail chat_id=%s err=%s", cid, e)
     except Exception as e:
         logger.exception("broadcast_inventory bot session failed: %s", e)
-        return {"ok": 0, "fail": len(recipients), "error": str(e)}
+        result = {"ok": 0, "fail": len(recipients), "error": str(e)}
+        await _log_broadcast_to_dashboard(
+            "broadcast_inventory", "Cập nhật kho", result, extra=extra,
+        )
+        return result
 
     logger.info(
         "broadcast_inventory_update recipients=%s sent=%s fail=%s only_in_stock=%s",
         len(recipients), ok, fail, only_in_stock,
     )
-    return {"ok": ok, "fail": fail, "recipients": len(recipients)}
+    result = {"ok": ok, "fail": fail, "recipients": len(recipients)}
+    await _log_broadcast_to_dashboard(
+        "broadcast_inventory", "Cập nhật kho", result, extra=extra,
+    )
+    return result
 
 
 async def cmd_capnhatkho(update: Update, context: ContextTypes.DEFAULT_TYPE):
