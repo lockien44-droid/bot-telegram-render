@@ -421,26 +421,29 @@ def build_checkout_caption_with_countdown(
     qty: int,
     total: int,
     remain_seconds: int = 0,
-    status_line: str = "⏳ *ĐANG CHỜ THANH TOÁN*",
+    status_line: str = "",
 ) -> str:
-    _ = remain_seconds
+    _ = remain_seconds, unit_price
     ttl_text = format_order_ttl()
     bank_acc = PAYMENT_INFO["bank_number"]
     bank_code = PAYMENT_INFO["bank_code"].upper()
+    bank_owner = PAYMENT_INFO["bank_owner"]
 
-    pay_note = normalize_order_ref(order_id) # hàm của bạn đã bỏ ký tự lạ
+    pay_note = normalize_order_ref(order_id)
+
+    header = f"{status_line}\n\n" if status_line else ""
 
     return (
-        f"{status_line}\n\n"
-        f"🧾 Mã đơn: `{order_id}`\n"
-        f"📦 SP: *{product_name}* — {fmt_price(unit_price)}\n"
-        f"🔢 SL: *{qty}*\n"
-        f"💰 Tổng: *{fmt_price(total)}*\n\n"
-        f"⏳ *Hết hạn sau:* {ttl_text}\n\n"
-        f"📌 *Thanh toán:*\n"
-        f"• STK: `{bank_acc}`\n"
-        f"• Bank: `{bank_code}`\n"
-        f"• Nội dung CK: `{pay_note}`"
+        f"{header}"
+        f"💸 Chuyển khoản *{fmt_price(total)}* tới tài khoản:\n"
+        f"🏦 {bank_code} – {bank_owner}\n"
+        f"🪪 Số TK: `{bank_acc}`\n"
+        f"🧾 Nội dung: `{pay_note}`\n\n"
+        f"📦 Sản phẩm: *{product_name}*\n"
+        f"🔢 Số lượng: *{qty}*\n"
+        f"💰 Cần thanh toán: *{fmt_price(total)}*\n\n"
+        f"⚡ Quét QR để thanh toán nhanh!\n"
+        f"_Giữ hàng tối đa {ttl_text} (hết hạn sẽ hoàn kho)._"
     )
 
 async def edit_checkout_message(
@@ -2023,7 +2026,6 @@ async def countdown_job(context: ContextTypes.DEFAULT_TYPE):
         qty=normalize_int(order.get("qty"), 1),
         total=normalize_int(order.get("total"), 0),
         remain_seconds=remain,
-        status_line="⏳ *ĐANG CHỜ THANH TOÁN*",
     )
     qr_url = build_vietqr_image_url(order_id, normalize_int(order.get("total"), 0))
     caption_with_link = caption
@@ -2227,7 +2229,6 @@ async def checkout_flow(
         qty=qty,
         total=total,
         remain_seconds=ORDER_TTL_SECONDS,
-        status_line="⏳ *ĐANG CHỜ THANH TOÁN*",
     )
 
     # ✅ lấy qr bytes (nếu fail -> None)
