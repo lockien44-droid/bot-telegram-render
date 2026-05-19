@@ -1523,8 +1523,7 @@ def product_detail_kb(pid: str, ready_qty: int) -> InlineKeyboardMarkup:
     else:
         rows.append([InlineKeyboardButton("💬 Liên hệ hỗ trợ", url=SUPPORT_TELE_LINK)])
 
-    rows.append([InlineKeyboardButton("⬅️ Quay lại menu sản phẩm", callback_data="back_products")])
-    rows.append([InlineKeyboardButton("⬅️ Menu chính", callback_data="back_main")])
+    rows.append([InlineKeyboardButton("⬅️ Quay lại", callback_data="back_products")])
     return InlineKeyboardMarkup(rows)
 
 def qty_select_text(p: Dict[str, Any]) -> str:
