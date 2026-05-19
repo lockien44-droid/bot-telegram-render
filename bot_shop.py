@@ -293,7 +293,16 @@ async def notify_admins_order_event(
         if actor_id is not None:
             lines.append(f"Thao tác bởi: `{actor_id}`")
 
-        await notify_admins(context, "\n".join(lines))
+        # Không gửi cho chính khách hàng (nếu khách trùng admin), để họ thấy giao diện gọn.
+        skip_ids: set[int] = set()
+        try:
+            cust_uid = int(str(order.get("user_id") or "").strip())
+            if cust_uid:
+                skip_ids.add(cust_uid)
+        except Exception:
+            pass
+
+        await notify_admins(context, "\n".join(lines), exclude_chat_ids=skip_ids)
 
     try:
         await gs_call(append_dashboard_notification_row_sync, event, order, released, actor_id)
@@ -381,7 +390,7 @@ def build_vietqr_image_url(order_id: str, amount: int) -> str:
     name = PAYMENT_INFO["bank_owner"].strip()
 
     return (
-        f"https://img.vietqr.io/image/{bank}-{acc}-compact2.png"
+        f"https://img.vietqr.io/image/{bank}-{acc}-qr_only.png"
         f"?amount={int(amount)}"
         f"&addInfo={quote(add_info)}"
         f"&accountName={quote(name)}"
