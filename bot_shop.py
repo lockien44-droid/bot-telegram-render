@@ -1931,6 +1931,19 @@ async def handle_custom_qty_input(update: Update, context: ContextTypes.DEFAULT_
     if user_id not in PENDING_QTY:
         return False
 
+    t = (update.message.text or "").strip()
+
+    # Nếu user bấm nút bottom keyboard (Sản phẩm / Hỗ trợ) hoặc lệnh /,
+    # thoát chế độ nhập số lượng để text_router xử lý menu chính.
+    if t.startswith("/") or t in {BTN_PRODUCTS, BTN_SUPPORT, BTN_ORDERS, BTN_2FA, BTN_MAIL}:
+        PENDING_QTY.pop(user_id, None)
+        return False
+
+    menu_t = normalize_menu_text(t)
+    if menu_t in {"san pham", "ho tro", "don hang"} or "sản phẩm" in menu_t or "hỗ trợ" in menu_t:
+        PENDING_QTY.pop(user_id, None)
+        return False
+
     pid = PENDING_QTY[user_id]["product_id"]
     p = await gs_call(find_product_by_id, pid)
     if not p:
@@ -1938,9 +1951,12 @@ async def handle_custom_qty_input(update: Update, context: ContextTypes.DEFAULT_
         await update.message.reply_text("❌ Sản phẩm không tồn tại.", reply_markup=main_menu_keyboard())
         return True
 
-    t = (update.message.text or "").strip()
     if not t.isdigit() or int(t) <= 0:
-        await update.message.reply_text("❗ Vui lòng nhập số nguyên >= 1.")
+        await update.message.reply_text(
+            "❗ Vui lòng nhập *số nguyên* >= 1 (ví dụ: 1, 3, 10). "
+            "Bấm *Sản phẩm* hoặc */start* để thoát.",
+            parse_mode="Markdown",
+        )
         return True
 
     qty = int(t)
