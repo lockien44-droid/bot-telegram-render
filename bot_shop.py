@@ -1328,16 +1328,19 @@ BTN_MAIL     = "📬 Đọc mail".replace("\ufe0f","")
 
 
 def remove_reply_keyboard() -> ReplyKeyboardRemove:
-    """Xóa bàn phím cố định ở dưới (ReplyKeyboard) — đã chuyển sang inline keyboard."""
     return ReplyKeyboardRemove()
 
 
-def main_menu_keyboard():  # noqa: ANN201
-    """Đã bỏ ReplyKeyboard cố định → trả về ReplyKeyboardRemove để xóa keyboard cũ."""
-    return ReplyKeyboardRemove()
+def main_menu_keyboard() -> ReplyKeyboardMarkup:
+    """Bàn phím cố định ở dưới — chỉ giữ Sản phẩm và Hỗ trợ."""
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton(BTN_PRODUCTS), KeyboardButton(BTN_SUPPORT)]],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
 
 
-def _legacy_main_menu_keyboard() -> ReplyKeyboardMarkup:
+def _legacy_full_keyboard() -> ReplyKeyboardMarkup:
     kb = [
         [KeyboardButton(BTN_PRODUCTS), KeyboardButton(BTN_SUPPORT)],
         [KeyboardButton(BTN_ORDERS)],
@@ -1539,10 +1542,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     schedule_upsert_user(update.effective_chat.id, user.username or "", user.full_name or "")
 
-    # 1) Xóa ReplyKeyboard cũ (nếu user còn thấy keyboard cố định từ phiên trước)
+    # 1) Đặt lại ReplyKeyboard ở dưới — chỉ còn Sản phẩm và Hỗ trợ
     try:
-        cleanup_msg = await update.message.reply_text("…", reply_markup=ReplyKeyboardRemove())
-        await cleanup_msg.delete()
+        kb_msg = await update.message.reply_text("⌨️", reply_markup=main_menu_keyboard())
+        await kb_msg.delete()
     except Exception:
         pass
 
