@@ -1480,15 +1480,12 @@ def build_products_menu_kb(
 def product_detail_text(p: Dict[str, Any], ready_qty: int) -> str:
     status = "✅ *Còn hàng*" if ready_qty > 0 else "⛔ *Hết hàng*"
 
-    # ✅ mô tả lấy từ sheet
     desc = (p.get("description") or "").strip()
     if not desc:
         desc = "Chưa có mô tả."
-
-    # tránh vỡ Markdown vì dấu `
     desc = desc.replace("`", "'")
 
-    return (
+    body = (
         f"📦 *{p['name']}*\n\n"
         f"💰 Giá: *{fmt_price(p['price'])}*\n"
         f"📦 Còn lại: *{ready_qty}*\n"
@@ -1496,14 +1493,33 @@ def product_detail_text(p: Dict[str, Any], ready_qty: int) -> str:
         f"📌 Trạng thái: {status}\n"
         "━━━━━━━━━━━━━━━━━━\n\n"
         "⚡ Thanh toán xong hệ thống *giao tự động*.\n"
-        "👇 Chọn chức năng bên dưới:"
     )
+    if ready_qty > 0:
+        body += "🛒 *Chọn số lượng để mua* (bot sẽ tạo QR thanh toán ngay):"
+    else:
+        body += "💬 Sản phẩm tạm hết, vui lòng liên hệ hỗ trợ."
+    return body
 
 
 def product_detail_kb(pid: str, ready_qty: int) -> InlineKeyboardMarkup:
+    """Trang chi tiết sản phẩm: chọn số lượng → tạo QR thanh toán ngay,
+    không còn nút 'Mua ngay' trung gian."""
     rows = []
     if ready_qty > 0:
-        rows.append([InlineKeyboardButton("🛒 Mua ngay", callback_data=f"buy|{pid}")])
+        # Quick qty buttons — bấm là chốt số lượng và sinh QR
+        row1 = [
+            InlineKeyboardButton("🛒 Mua 1", callback_data=f"qty|{pid}|1"),
+            InlineKeyboardButton("🛒 Mua 2", callback_data=f"qty|{pid}|2"),
+        ]
+        rows.append(row1)
+        if ready_qty >= 5:
+            row2 = [
+                InlineKeyboardButton("🛒 Mua 5", callback_data=f"qty|{pid}|5"),
+            ]
+            if ready_qty >= 10:
+                row2.append(InlineKeyboardButton("🛒 Mua 10", callback_data=f"qty|{pid}|10"))
+            rows.append(row2)
+        rows.append([InlineKeyboardButton("✏️ Nhập số lượng khác", callback_data=f"qtycustom|{pid}")])
     else:
         rows.append([InlineKeyboardButton("💬 Liên hệ hỗ trợ", url=SUPPORT_TELE_LINK)])
 
