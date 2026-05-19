@@ -2734,21 +2734,35 @@ async def cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE, order
     remove_jobs_by_prefix(context.application, f"countdown_{order_id}")
     remove_jobs_by_prefix(context.application, f"ttl_{order_id}")
 
-    delete_qr = None
+    # 1) Xoá ngay tin nhắn QR + nút "Kiểm tra thanh toán / Huỷ đơn"
+    qr_deleted = False
     if qr_msg_id.isdigit():
-        delete_qr = asyncio.create_task(
-            context.bot.delete_message(chat_id=user_id, message_id=int(qr_msg_id))
-        )
-
-    released = await gs_call(release_hold_by_order, order_id, "CANCELLED", order_rownum)
-
-    if delete_qr:
         try:
-            await delete_qr
-        except Exception:
-            pass
+            await context.bot.delete_message(chat_id=user_id, message_id=int(qr_msg_id))
+            qr_deleted = True
+        except Exception as e:
+            logger.info("cancel: delete QR msg failed (%s) – fallback to clear keyboard", e)
+            try:
+                await context.bot.edit_message_reply_markup(
+                    chat_id=user_id, message_id=int(qr_msg_id), reply_markup=None
+                )
+            except Exception:
+                pass
 
+    # 2) Đồng thời cũng cố xoá luôn tin nhắn user vừa bấm (callback message) nếu khác qr_msg_id
+    try:
+        cb_msg_id = q.message.message_id if q.message else None
+        if cb_msg_id and (not qr_msg_id.isdigit() or int(qr_msg_id) != cb_msg_id):
+            await context.bot.delete_message(chat_id=user_id, message_id=cb_msg_id)
+    except Exception:
+        pass
+
+    # 3) Xoá các "Chưa tìm thấy giao dịch..." đã ghi nhớ
     await cleanup_check_miss_messages(context.bot, order_id)
+
+    # 4) Trả kho (bước chậm hơn)
+    released = await gs_call(release_hold_by_order, order_id, "CANCELLED", order_rownum)
+    _ = qr_deleted
 
     await context.bot.send_message(
         chat_id=user_id,
