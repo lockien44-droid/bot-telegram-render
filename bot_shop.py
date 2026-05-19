@@ -533,6 +533,7 @@ def build_checkout_caption_with_countdown(
     pay_note = normalize_order_ref(order_id)
 
     header = f"{status_line}\n\n" if status_line else ""
+    icon = product_icon(product_name)
 
     return (
         f"{header}"
@@ -540,7 +541,7 @@ def build_checkout_caption_with_countdown(
         f"🏦 {bank_code} – {bank_owner}\n"
         f"🪪 Số TK: `{bank_acc}`\n"
         f"🧾 Nội dung: `{pay_note}`\n\n"
-        f"📦 Sản phẩm: *{product_name}*\n"
+        f"{icon} Sản phẩm: *{product_name}*\n"
         f"🔢 Số lượng: *{qty}*\n"
         f"💰 Cần thanh toán: *{fmt_price(total)}*\n\n"
         f"⚡ Quét QR để thanh toán nhanh!\n"
@@ -1548,6 +1549,38 @@ async def send_support(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ================== UI: PRODUCTS ==================
+def product_icon(name: str) -> str:
+    """Trả về emoji icon đại diện cho sản phẩm dựa trên tên."""
+    s = (name or "").lower().replace(" ", "")
+    if "gpt" in s or "chatgpt" in s or "openai" in s:
+        return "🤖"
+    if "365" in s or "ms365" in s or "office" in s:
+        return "📘"
+    if "elevenlab" in s or "eleven" in s:
+        return "🎙"
+    if "capcut" in s:
+        return "🎬"
+    if "gmail" in s:
+        return "📧"
+    if "hotmail" in s or "outlook" in s:
+        return "📨"
+    if "gemini" in s or "antigravity" in s:
+        return "✨"
+    if "kiro" in s:
+        return "🪐"
+    if "claude" in s or "anthropic" in s:
+        return "🧠"
+    if "canva" in s:
+        return "🎨"
+    if "netflix" in s:
+        return "🎬"
+    if "spotify" in s:
+        return "🎧"
+    if "youtube" in s:
+        return "📺"
+    return "📦"
+
+
 def build_products_menu_kb(
     products: List[Dict[str, Any]],
     stock_ready: Dict[str, int],
@@ -1560,7 +1593,8 @@ def build_products_menu_kb(
 
         # Format theo yêu cầu: "Tên | 15.000 vnđ | Số Lượng Còn : 5"
         price_text = fmt_price(p["price"]).replace(" đ", " vnđ")
-        label = f"{p['name']} | {price_text}|SL: {ready}"
+        icon = product_icon(p.get("name", ""))
+        label = f"{icon} {p['name']} | {price_text}|SL: {ready}"
 
         buttons.append([InlineKeyboardButton(label, callback_data=f"pdetail|{p['product_id']}")])
 
@@ -1589,8 +1623,9 @@ def product_detail_text(p: Dict[str, Any], ready_qty: int) -> str:
         desc = "Chưa có mô tả."
     desc = desc.replace("`", "'")
 
+    icon = product_icon(p.get("name", ""))
     body = (
-        f"📦 *{p['name']}*\n\n"
+        f"{icon} *{p['name']}*\n\n"
         f"💰 Giá: *{fmt_price(p['price'])}*\n"
         f"📦 Còn lại: *{ready_qty}*\n"
         f"📝 *Mô tả:*\n{desc}\n"
@@ -3392,11 +3427,13 @@ def build_inventory_broadcast_text(
         qty = int(ready_map.get(sc, 0) or 0)
         if only_in_stock and qty <= 0:
             continue
-        name = escape_markdown(str(p.get("name") or sc), version=1)
+        raw_name = str(p.get("name") or sc)
+        name = escape_markdown(raw_name, version=1)
         price = int(p.get("price") or 0)
         dot = _stock_dot(qty)
+        icon = product_icon(raw_name)
         rows.append(
-            f"{dot} *{name}*\n"
+            f"{dot} {icon} *{name}*\n"
             f"   • Số lượng: *{qty}*  •  Giá: *{fmt_price(price)}*"
         )
         total_qty += max(0, qty)
