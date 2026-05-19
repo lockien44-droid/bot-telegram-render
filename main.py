@@ -20,6 +20,20 @@ from sepay_webhook import expire_scan_once, process_payment, set_telegram_bot, v
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("MAIN_ORCHESTRATOR")
 
+
+_QUIET_PATHS = ("/health", "/ping", "/cron/keepalive", "/favicon.ico")
+
+
+class _AccessLogFilter(logging.Filter):
+    """Suppress uvicorn access logs for keep-alive endpoints (cron-job.org, UptimeRobot, ...)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        return not any(path in message for path in _QUIET_PATHS)
+
+
+logging.getLogger("uvicorn.access").addFilter(_AccessLogFilter())
+
 app = FastAPI()
 telegram_app = None
 register_admin_routes(app)
@@ -94,6 +108,16 @@ async def health():
 
 @app.head("/health")
 async def health_head():
+    return None
+
+
+@app.get("/cron/keepalive")
+async def cron_keepalive():
+    return {"ok": True, "ts": int(time.time())}
+
+
+@app.head("/cron/keepalive")
+async def cron_keepalive_head():
     return None
 
 
