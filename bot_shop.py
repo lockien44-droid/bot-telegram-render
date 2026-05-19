@@ -50,6 +50,11 @@ import httpx
 
 SHEETS_LOCK = asyncio.Lock()
 _CATALOG_LOCK = asyncio.Lock()
+
+# Lưu các message "Chưa tìm thấy giao dịch khớp đơn này" để tự xoá khi đơn DELIVERED/CANCELLED.
+# order_id -> list of (chat_id, message_id)
+_CHECK_MISS_MESSAGES: Dict[str, List[Tuple[int, int]]] = {}
+_CHECK_MISS_LOCK = asyncio.Lock()
 _DEFAULT_PORT = os.getenv("PORT", "10000").strip() or "10000"
 API_BASE_URL = os.environ.get("API_BASE_URL", f"http://127.0.0.1:{_DEFAULT_PORT}/api").rstrip("/")
 # Tắt mặc định: bot gọi Sheets trực tiếp (nhanh hơn HTTP qua FastAPI)
@@ -402,6 +407,31 @@ def build_vietqr_image_url(order_id: str, amount: int) -> str:
         f"&addInfo={quote(add_info)}"
         f"&accountName={quote(name)}"
     )
+
+
+async def track_check_miss_msg(order_id: str, chat_id: int, message_id: int) -> None:
+    """Ghi nhớ message "Chưa tìm thấy giao dịch" để xoá sau khi đơn DELIVERED/CANCELLED."""
+    if not order_id or not chat_id or not message_id:
+        return
+    async with _CHECK_MISS_LOCK:
+        lst = _CHECK_MISS_MESSAGES.setdefault(order_id, [])
+        if (chat_id, message_id) not in lst:
+            lst.append((chat_id, message_id))
+
+
+async def cleanup_check_miss_messages(bot, order_id: str) -> None:
+    """Xoá toàn bộ message 'Chưa tìm thấy giao dịch' đã gửi cho đơn này."""
+    if not order_id or bot is None:
+        return
+    async with _CHECK_MISS_LOCK:
+        items = _CHECK_MISS_MESSAGES.pop(order_id, None)
+    if not items:
+        return
+    for chat_id, msg_id in items:
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=msg_id)
+        except Exception:
+            pass
 
 
 async def fetch_sepay_tx_for_order(
@@ -2433,7 +2463,7 @@ async def confirm_paid(update: Update, context: ContextTypes.DEFAULT_TYPE, order
                 f"⏳ Đơn còn *{remain_min}p{remain_sec:02d}s* trước khi hết hạn.\n"
                 if remain > 0 else "⌛ Đơn đã hết hạn, vui lòng tạo đơn mới.\n"
             )
-            await context.bot.send_message(
+            miss_msg = await context.bot.send_message(
                 chat_id=q.from_user.id,
                 text=(
                     "🔍 *Chưa tìm thấy giao dịch khớp đơn này.*\n\n"
@@ -2449,10 +2479,15 @@ async def confirm_paid(update: Update, context: ContextTypes.DEFAULT_TYPE, order
                 ),
                 parse_mode="Markdown",
             )
+            try:
+                await track_check_miss_msg(order_id, miss_msg.chat_id, miss_msg.message_id)
+            except Exception:
+                pass
             return
 
     # ================== RESEND nếu đã DELIVERED ==================
     if status == "DELIVERED":
+        await cleanup_check_miss_messages(context.bot, order_id)
         delivered_at = (order.get("delivered_at") or now_str()).strip()
 
         deliver_text_plain = (order.get("deliver_text") or "").strip()
@@ -2586,6 +2621,8 @@ async def confirm_paid(update: Update, context: ContextTypes.DEFAULT_TYPE, order
         "deliver_text": deliver_text_plain
     })
 
+    await cleanup_check_miss_messages(context.bot, order_id)
+
     # stop countdown job
     remove_jobs_by_prefix(context.application, f"countdown_{order_id}")
 
@@ -2710,6 +2747,8 @@ async def cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE, order
             await delete_qr
         except Exception:
             pass
+
+    await cleanup_check_miss_messages(context.bot, order_id)
 
     await context.bot.send_message(
         chat_id=user_id,

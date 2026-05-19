@@ -765,6 +765,14 @@ async def process_payment(payload: Dict[str, Any]) -> None:
             logger.exception("send_delivery_message crashed: %s", e)
             sent_ok = False
 
+        # Xoá các message "Chưa tìm thấy giao dịch" mà user đã thấy trong lúc chờ
+        try:
+            from bot_shop import cleanup_check_miss_messages
+            if tg_bot:
+                await cleanup_check_miss_messages(tg_bot, canonical_oid)
+        except Exception as e:
+            logger.warning("cleanup_check_miss_messages failed: %s", e)
+
         # 7) nếu gửi OK thì xoá QR; nếu không thì chỉ edit lại caption
         if qr_msg_id_s.isdigit() and tg_bot:
             if sent_ok:
