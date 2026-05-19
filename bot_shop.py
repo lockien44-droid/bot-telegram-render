@@ -12,6 +12,9 @@ import hashlib
 import struct
 import urllib.request
 import json
+import html as _html
+import secrets as _stdlib_secrets
+from collections import OrderedDict
 from telegram.constants import ChatAction, ParseMode
 from gspread.cell import Cell
 from datetime import datetime, timedelta
@@ -45,6 +48,7 @@ from telegram.ext import (
 from telegram.helpers import escape_markdown
 
 from mail_reader import MailReaderError, read_inbox_messages
+from custom_emojis import extract_custom_emoji_ids, tg_emoji, get_emoji_id
 
 import httpx
 
@@ -148,6 +152,37 @@ _CACHE = {
 LAST_MAIL_INPUT: Dict[int, str] = {}
 LAST_TOTP_INPUT: Dict[int, str] = {}
 LAST_ACTION_KIND: Dict[int, str] = {}  # user_id -> "mail" | "2fa"
+
+# Snapshot per-message cho nút "🔄 Đọc lại": mỗi tin response gắn 1 token,
+# token -> (user_id, kind, raw). Nhờ vậy bấm "Đọc lại" trên tin cũ vẫn đọc
+# đúng input của tin đó, không bị ghi đè bởi input mới nhất.
+REREAD_PAYLOADS: "OrderedDict[str, Tuple[int, str, str]]" = OrderedDict()
+REREAD_PAYLOADS_MAX = 1000
+
+
+def _store_reread_payload(user_id: int, kind: str, raw: str) -> str:
+    """Lưu snapshot và trả về token (ngắn, an toàn cho callback_data 64-byte)."""
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    token = _stdlib_secrets.token_urlsafe(8)
+    REREAD_PAYLOADS[token] = (int(user_id), kind, raw)
+    while len(REREAD_PAYLOADS) > REREAD_PAYLOADS_MAX:
+        REREAD_PAYLOADS.popitem(last=False)
+    return token
+
+
+def _get_reread_payload(token: str, user_id: int) -> Optional[Tuple[str, str]]:
+    """Trả về (kind, raw) cho token nếu hợp lệ và đúng owner; ngược lại None."""
+    if not token:
+        return None
+    item = REREAD_PAYLOADS.get(token)
+    if not item:
+        return None
+    owner_id, kind, raw = item
+    if owner_id != int(user_id):
+        return None
+    return kind, raw
 def _ts() -> float:
     return time.time()
 
@@ -1526,7 +1561,14 @@ def support_kb() -> InlineKeyboardMarkup:
     ])
 
 
-def quick_actions_kb() -> InlineKeyboardMarkup:
+def quick_actions_kb(repeat_token: Optional[str] = None) -> InlineKeyboardMarkup:
+    """Inline keyboard chuẩn cho các tin nhanh.
+
+    Nếu ``repeat_token`` được truyền, nút "🔄 Đọc lại" sẽ gắn token đó vào
+    ``callback_data`` để khi user bấm trên đúng tin này, bot biết chính xác
+    input nào cần đọc lại (chống bug "đọc nhầm sang input mới nhất").
+    """
+    repeat_cb = f"mail_repeat|{repeat_token}" if repeat_token else "mail_repeat"
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🛍 Sản phẩm", callback_data="go_products"),
@@ -1536,7 +1578,7 @@ def quick_actions_kb() -> InlineKeyboardMarkup:
             InlineKeyboardButton("🔐 2FA", callback_data="2fa_help"),
             InlineKeyboardButton("📬 Đọc mail", callback_data="mail_help"),
         ],
-        [InlineKeyboardButton("🔄 Đọc lại", callback_data="mail_repeat")],
+        [InlineKeyboardButton("🔄 Đọc lại", callback_data=repeat_cb)],
         [InlineKeyboardButton("⬅️ Menu chính", callback_data="back_main")],
     ])
 
@@ -1549,6 +1591,22 @@ async def send_support(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ================== UI: PRODUCTS ==================
+_PRODUCT_LOGO_DIR = os.path.join(BASE_DIR, "assets", "icons")
+
+
+def product_logo_path(name: str) -> Optional[str]:
+    """Trả về đường dẫn ảnh logo cục bộ nếu sản phẩm có logo riêng."""
+    s = (name or "").lower().replace(" ", "")
+    candidates: List[str] = []
+    if "gpt" in s or "chatgpt" in s or "openai" in s:
+        candidates.append("chatgpt.png")
+    for fname in candidates:
+        full = os.path.join(_PRODUCT_LOGO_DIR, fname)
+        if os.path.exists(full):
+            return full
+    return None
+
+
 def product_icon(name: str) -> str:
     """Trả về emoji icon đại diện cho sản phẩm dựa trên tên."""
     s = (name or "").lower().replace(" ", "")
@@ -1616,25 +1674,41 @@ def build_products_menu_kb(
 
 
 def product_detail_text(p: Dict[str, Any], ready_qty: int) -> str:
-    status = "✅ *Còn hàng*" if ready_qty > 0 else "⛔ *Hết hàng*"
+    """Trả về caption/text cho màn chi tiết sản phẩm dưới dạng HTML.
+
+    Lưu ý: caller PHẢI gửi với parse_mode="HTML" (không phải Markdown), vì
+    custom emoji (premium) chỉ render được khi dùng <tg-emoji> trong HTML.
+    """
+    status = "✅ <b>Còn hàng</b>" if ready_qty > 0 else "⛔ <b>Hết hàng</b>"
 
     desc = (p.get("description") or "").strip()
     if not desc:
         desc = "Chưa có mô tả."
-    desc = desc.replace("`", "'")
+    desc = _html.escape(desc.replace("`", "'"))
 
-    icon = product_icon(p.get("name", ""))
+    name = p.get("name", "")
+    safe_name = _html.escape(name)
+    icon_text = product_icon(name)  # fallback emoji "thường" (vd: 🤖, 📘, ...)
+
+    # Với sản phẩm ChatGPT/OpenAI và đã cấu hình custom_emoji_id, dùng emoji
+    # animated từ pack @ADROITPACKE. Người không có Premium sẽ thấy fallback.
+    s = name.lower().replace(" ", "")
+    if ("gpt" in s or "chatgpt" in s or "openai" in s) and get_emoji_id("chatgpt"):
+        icon = tg_emoji("chatgpt", icon_text)
+    else:
+        icon = _html.escape(icon_text)
+
     body = (
-        f"{icon} *{p['name']}*\n\n"
-        f"💰 Giá: *{fmt_price(p['price'])}*\n"
-        f"📦 Còn lại: *{ready_qty}*\n"
-        f"📝 *Mô tả:*\n{desc}\n"
+        f"{icon} <b>{safe_name}</b>\n\n"
+        f"💰 Giá: <b>{_html.escape(fmt_price(p['price']))}</b>\n"
+        f"📦 Còn lại: <b>{ready_qty}</b>\n"
+        f"📝 <b>Mô tả:</b>\n{desc}\n"
         f"📌 Trạng thái: {status}\n"
         "━━━━━━━━━━━━━━━━━━\n\n"
-        "⚡ Thanh toán xong hệ thống *giao tự động*.\n"
+        "⚡ Thanh toán xong hệ thống <b>giao tự động</b>.\n"
     )
     if ready_qty > 0:
-        body += "🛒 *Chọn số lượng để mua* (bot sẽ tạo QR thanh toán ngay):"
+        body += "🛒 <b>Chọn số lượng để mua</b> (bot sẽ tạo QR thanh toán ngay):"
     else:
         body += "💬 Sản phẩm tạm hết, vui lòng liên hệ hỗ trợ."
     return body
@@ -1731,6 +1805,56 @@ async def cmd_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_support(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_support(update.effective_user.id, context)
 
+
+async def cmd_emojiid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin: trích ``custom_emoji_id`` của mọi premium emoji trong tin nhắn.
+
+    Cách dùng:
+      • Gửi/forward một tin có chứa premium emoji (vd: emoji ChatGPT từ
+        @ADROITPACKE), sau đó **reply** vào tin đó bằng ``/emojiid``.
+      • Hoặc gõ ``/emojiid`` và chèn trực tiếp các premium emoji vào sau.
+    """
+    if not _is_admin_user(update):
+        return await _deny_non_admin(update)
+
+    msg = update.message
+    if msg is None:
+        return
+
+    target = msg.reply_to_message or msg
+    pairs = extract_custom_emoji_ids(target)
+
+    if not pairs:
+        await msg.reply_text(
+            "Không thấy *premium emoji* nào trong tin nhắn này.\n\n"
+            "Hướng dẫn:\n"
+            "1) Mở https://t.me/addemoji/ADROITPACKE và *Add Emoji*.\n"
+            "2) Dán emoji ChatGPT vào một tin gửi cho bot.\n"
+            "3) Reply tin đó bằng `/emojiid` (tài khoản admin).",
+            parse_mode="Markdown",
+            disable_web_page_preview=True,
+        )
+        return
+
+    lines = [f"Tìm thấy *{len(pairs)}* custom emoji:\n"]
+    for idx, (fallback, emoji_id) in enumerate(pairs, 1):
+        safe_fb = escape_markdown(fallback or "•", version=1)
+        lines.append(f"{idx}. {safe_fb}  →  `{emoji_id}`")
+
+    snippet_name = "chatgpt" if len(pairs) == 1 else "emoji_1"
+    py_snippet = (
+        "EMOJI_IDS = {\n"
+        + "\n".join(
+            f'    "{snippet_name if i == 0 else f"emoji_{i+1}"}": "{eid}",'
+            for i, (_, eid) in enumerate(pairs)
+        )
+        + "\n}"
+    )
+    lines.append("\nDán vào `custom_emojis.py`:\n```\n" + py_snippet + "\n```")
+
+    await msg.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
 def looks_like_mail_account(text: str) -> bool:
     text = (text or "").strip()
     return "@" in text and ("|" in text or "----" in text)
@@ -1826,14 +1950,26 @@ async def send_2fa_from_text(update: Update, context: ContextTypes.DEFAULT_TYPE,
     if not text:
         await send_2fa_help(update.effective_chat.id, context)
         return
+    token = ""
     if update.effective_user:
-        LAST_TOTP_INPUT[update.effective_user.id] = raw
-        LAST_ACTION_KIND[update.effective_user.id] = "2fa"
-    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=quick_actions_kb())
+        user_id = update.effective_user.id
+        LAST_TOTP_INPUT[user_id] = raw
+        LAST_ACTION_KIND[user_id] = "2fa"
+        token = _store_reread_payload(user_id, "2fa", raw)
+    await update.message.reply_text(
+        text, parse_mode="Markdown", reply_markup=quick_actions_kb(repeat_token=token)
+    )
 
 
-async def regen_2fa_again(chat_id: int, user_id: int, context: ContextTypes.DEFAULT_TYPE):
-    raw = LAST_TOTP_INPUT.get(user_id, "").strip()
+async def regen_2fa_again(
+    chat_id: int,
+    user_id: int,
+    context: ContextTypes.DEFAULT_TYPE,
+    raw_override: Optional[str] = None,
+):
+    """Tính lại 2FA. Nếu ``raw_override`` được truyền (từ token snapshot), dùng nó;
+    ngược lại fallback về ``LAST_TOTP_INPUT[user_id]`` (đọc cái mới nhất)."""
+    raw = (raw_override if raw_override is not None else LAST_TOTP_INPUT.get(user_id, "")).strip()
     if not raw:
         await context.bot.send_message(
             chat_id=chat_id,
@@ -1849,8 +1985,12 @@ async def regen_2fa_again(chat_id: int, user_id: int, context: ContextTypes.DEFA
             reply_markup=quick_actions_kb(),
         )
         return
+    token = _store_reread_payload(user_id, "2fa", raw)
     await context.bot.send_message(
-        chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=quick_actions_kb()
+        chat_id=chat_id,
+        text=text,
+        parse_mode="Markdown",
+        reply_markup=quick_actions_kb(repeat_token=token),
     )
 
 
@@ -1904,15 +2044,26 @@ async def cmd_2fa(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await send_2fa_from_text(update, context, raw)
 
 
-async def render_mail_result(loading_msg, raw: str):
+async def render_mail_result(loading_msg, raw: str, user_id: Optional[int] = None):
+    # Tạo token snapshot cho lần đọc này. Nhờ vậy, nút "🔄 Đọc lại" trên đúng
+    # tin này sẽ luôn đọc lại CHÍNH chuỗi ``raw`` (không bị overwrite bởi input mới).
+    if user_id is None:
+        try:
+            chat = getattr(loading_msg, "chat", None)
+            user_id = int(chat.id) if chat else 0
+        except Exception:
+            user_id = 0
+    token = _store_reread_payload(user_id, "mail", raw) if user_id else ""
+    kb = quick_actions_kb(repeat_token=token)
+
     try:
         result = await asyncio.to_thread(read_inbox_messages, raw, 1)
     except MailReaderError as e:
-        await loading_msg.edit_text(f"Không đọc được mail:\n{e}", reply_markup=quick_actions_kb())
+        await loading_msg.edit_text(f"Không đọc được mail:\n{e}", reply_markup=kb)
         return
     except Exception as e:
         logger.exception("cmd_mail failed")
-        await loading_msg.edit_text(f"Lỗi không xác định khi đọc mail:\n{e}", reply_markup=quick_actions_kb())
+        await loading_msg.edit_text(f"Lỗi không xác định khi đọc mail:\n{e}", reply_markup=kb)
         return
 
     email = escape_markdown(result.get("email", ""), version=2)
@@ -1921,7 +2072,7 @@ async def render_mail_result(loading_msg, raw: str):
         await loading_msg.edit_text(
             f"Không thấy mail nào trong inbox của `{email}`.",
             parse_mode="MarkdownV2",
-            reply_markup=quick_actions_kb(),
+            reply_markup=kb,
         )
         return
 
@@ -1959,20 +2110,29 @@ async def render_mail_result(loading_msg, raw: str):
         text,
         parse_mode="MarkdownV2",
         disable_web_page_preview=True,
-        reply_markup=quick_actions_kb(),
+        reply_markup=kb,
     )
 
 
 async def read_mail_from_text(update: Update, raw: str):
+    user_id: Optional[int] = None
     if update.effective_user:
-        LAST_MAIL_INPUT[update.effective_user.id] = raw
-        LAST_ACTION_KIND[update.effective_user.id] = "mail"
+        user_id = update.effective_user.id
+        LAST_MAIL_INPUT[user_id] = raw
+        LAST_ACTION_KIND[user_id] = "mail"
     loading_msg = await update.message.reply_text("Đang đọc hòm thư...")
-    await render_mail_result(loading_msg, raw)
+    await render_mail_result(loading_msg, raw, user_id=user_id)
 
 
-async def read_mail_again(chat_id: int, user_id: int, context: ContextTypes.DEFAULT_TYPE):
-    raw = LAST_MAIL_INPUT.get(user_id, "").strip()
+async def read_mail_again(
+    chat_id: int,
+    user_id: int,
+    context: ContextTypes.DEFAULT_TYPE,
+    raw_override: Optional[str] = None,
+):
+    """Đọc lại mail. Nếu ``raw_override`` được truyền (từ token snapshot), dùng nó;
+    ngược lại fallback về ``LAST_MAIL_INPUT[user_id]`` (đọc cái mới nhất)."""
+    raw = (raw_override if raw_override is not None else LAST_MAIL_INPUT.get(user_id, "")).strip()
     if not raw:
         await context.bot.send_message(
             chat_id=chat_id,
@@ -1981,7 +2141,7 @@ async def read_mail_again(chat_id: int, user_id: int, context: ContextTypes.DEFA
         )
         return
     loading_msg = await context.bot.send_message(chat_id=chat_id, text="Đang đọc lại hòm thư...")
-    await render_mail_result(loading_msg, raw)
+    await render_mail_result(loading_msg, raw, user_id=user_id)
 
 
 async def cmd_mail(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2068,11 +2228,39 @@ async def show_product_detail(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     ready_map = await gs_call(stock_count_ready_by_code_cached)
     ready = ready_map.get(p["stock_code"], 0)
-    await q.edit_message_text(
-        product_detail_text(p, ready),
-        parse_mode="Markdown",
-        reply_markup=product_detail_kb(pid, ready),
-    )
+    text = product_detail_text(p, ready)
+    kb = product_detail_kb(pid, ready)
+
+    logo = product_logo_path(p.get("name") or "")
+    if logo:
+        # Sản phẩm có logo riêng -> gửi message dạng PHOTO + caption.
+        # Xoá message cũ (danh sách sản phẩm) trước khi gửi mới.
+        chat_id = q.message.chat_id if q.message else q.from_user.id
+        try:
+            await q.message.delete()
+        except Exception:
+            pass
+        try:
+            with open(logo, "rb") as f:
+                await context.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=f,
+                    caption=text,
+                    parse_mode="HTML",
+                    reply_markup=kb,
+                )
+            return
+        except Exception as e:
+            logger.warning("send_photo product logo failed (%s): %s", logo, e)
+            # Fallback xuống gửi text bên dưới
+
+    try:
+        await q.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        chat_id = q.message.chat_id if q.message else q.from_user.id
+        await context.bot.send_message(
+            chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=kb
+        )
 
 async def ask_qty(update: Update, context: ContextTypes.DEFAULT_TYPE, pid: str):
     q = update.callback_query
@@ -3590,9 +3778,22 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         return await send_mail_help(q.from_user.id, context)
 
-    if data == "mail_repeat":
+    if data == "mail_repeat" or data.startswith("mail_repeat|"):
         await q.answer("Đang đọc lại...")
-        return await reuse_last_action(q.message.chat_id, q.from_user.id, context)
+        chat_id = q.message.chat_id
+        user_id = q.from_user.id
+        # Ưu tiên token gắn ngay trên tin (snapshot per-message) — fix bug
+        # "Đọc lại đọc nhầm sang input mới nhất".
+        token = data.split("|", 1)[1] if "|" in data else ""
+        payload = _get_reread_payload(token, user_id) if token else None
+        if payload is not None:
+            kind, raw = payload
+            if kind == "2fa":
+                return await regen_2fa_again(chat_id, user_id, context, raw_override=raw)
+            if kind == "mail":
+                return await read_mail_again(chat_id, user_id, context, raw_override=raw)
+        # Tin cũ (trước khi fix) hoặc token đã bị evict -> fallback hành vi cũ.
+        return await reuse_last_action(chat_id, user_id, context)
 
     if data == "2fa_help":
         await q.answer()
@@ -3687,6 +3888,7 @@ def configure_application(app: Application) -> Application:
     app.add_handler(CommandHandler("2fa", cmd_2fa))
     app.add_handler(CommandHandler("otp", cmd_2fa))
     app.add_handler(CommandHandler("capnhatkho", cmd_capnhatkho))
+    app.add_handler(CommandHandler("emojiid", cmd_emojiid))
 
     app.add_handler(CallbackQueryHandler(callback_router))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
