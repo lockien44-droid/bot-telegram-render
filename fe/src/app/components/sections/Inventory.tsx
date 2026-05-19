@@ -7,7 +7,7 @@ import { Badge } from "../ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { Textarea } from "../ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
-import { Warehouse, Plus, RotateCcw, ChevronDown, ChevronRight, LayoutGrid, List } from "lucide-react";
+import { Warehouse, Plus, RotateCcw, ChevronDown, ChevronRight, LayoutGrid, List, Megaphone } from "lucide-react";
 import { toast } from "sonner";
 import { adminApi, text, type AdminSnapshot, type AnyRow } from "../../api";
 
@@ -177,6 +177,35 @@ export function Inventory({ data, adminKey, refresh, preset, addStockPreset, emb
     }
   };
 
+  const broadcastInventory = async (onlyInStock: boolean) => {
+    if (
+      !window.confirm(
+        onlyInStock
+          ? "Gửi snapshot tồn kho (chỉ sản phẩm còn hàng) tới tất cả khách đã /start?"
+          : "Gửi snapshot toàn bộ kho (cả sản phẩm hết hàng) tới tất cả khách đã /start?",
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await adminApi<{ ok?: number; fail?: number; recipients?: number; skipped?: boolean; reason?: string }>(
+        "/admin/api/inventory/broadcast",
+        adminKey,
+        { method: "POST", body: JSON.stringify({ only_in_stock: onlyInStock }) },
+      );
+      if (result.skipped) {
+        toast.warning(`Không gửi được: ${result.reason || "unknown"}`);
+      } else {
+        toast.success(
+          `Đã gửi tới ${result.ok ?? 0}/${result.recipients ?? 0} người${(result.fail ?? 0) ? ` (${result.fail} lỗi)` : ""}`,
+        );
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const releaseHeldBulk = async (expiredOnly: boolean) => {
     if (!expiredOnly && !window.confirm("Trả toàn bộ HELD về READY? Chỉ dùng khi chắc chắn các đơn này không cần giữ nữa.")) return;
     setBusy(true);
@@ -195,6 +224,27 @@ export function Inventory({ data, adminKey, refresh, preset, addStockPreset, emb
   return (
     <div className="space-y-4">
       {!embedded && <h2 className="flex items-center gap-2"><Warehouse size={20} /> Kho hàng</h2>}
+
+      <div className="flex flex-wrap gap-2">
+        <Button
+          variant="default"
+          onClick={() => broadcastInventory(true)}
+          disabled={busy}
+          title="Gửi danh sách sản phẩm còn hàng tới tất cả khách đã /start"
+        >
+          <Megaphone size={16} className="mr-2" />
+          Cập nhật kho cho khách
+        </Button>
+        <Button
+          variant="outline"
+          onClick={() => broadcastInventory(false)}
+          disabled={busy}
+          title="Gửi toàn bộ kho (cả sản phẩm hết hàng) tới tất cả khách đã /start"
+        >
+          <Megaphone size={16} className="mr-2" />
+          Gửi đầy đủ (kể cả hết hàng)
+        </Button>
+      </div>
 
       <div className="grid grid-cols-3 gap-3">
         {(["READY", "HELD", "SOLD"] as const).map((s) => (

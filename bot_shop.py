@@ -3265,6 +3265,152 @@ async def broadcast_stock_update(stock_code: str, added_count: int) -> Dict[str,
     return {"ok": ok, "fail": fail, "recipients": len(recipients)}
 
 
+# ================== BROADCAST: Cập nhật kho hàng (full snapshot) ==================
+def _stock_dot(qty: int) -> str:
+    if qty <= 0:
+        return "🔴"
+    if qty <= 10:
+        return "🟡"
+    return "🟢"
+
+
+def build_inventory_broadcast_text(
+    products: List[Dict[str, Any]],
+    ready_map: Dict[str, int],
+    only_in_stock: bool = True,
+) -> str:
+    rows: List[str] = []
+    total_qty = 0
+    shown = 0
+    for p in products:
+        sc = normalize_stock_code(p.get("stock_code"))
+        qty = int(ready_map.get(sc, 0) or 0)
+        if only_in_stock and qty <= 0:
+            continue
+        name = escape_markdown(str(p.get("name") or sc), version=1)
+        price = int(p.get("price") or 0)
+        dot = _stock_dot(qty)
+        rows.append(
+            f"{dot} *{name}*\n"
+            f"   • Số lượng: *{qty}*  •  Giá: *{fmt_price(price)}*"
+        )
+        total_qty += max(0, qty)
+        shown += 1
+
+    if not rows:
+        body = "_Hiện chưa có sản phẩm nào còn hàng. Vui lòng quay lại sau._"
+    else:
+        body = "\n\n".join(rows)
+
+    return (
+        "📦 *CẬP NHẬT KHO HÀNG* ✨\n\n"
+        f"🕒 Cập nhật: *{now_dt().strftime('%H:%M %d/%m/%Y')}*\n"
+        f"📊 Sản phẩm còn hàng: *{shown}* | Tổng tồn: *{total_qty}*\n\n"
+        "*Tồn kho hiện tại:*\n\n"
+        f"{body}\n\n"
+        "👉 Bấm *Đi mua hàng* để chọn sản phẩm cần mua."
+    )
+
+
+def inventory_broadcast_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🛒 Đi mua hàng", callback_data="go_products")],
+    ])
+
+
+async def broadcast_inventory_update(
+    only_in_stock: bool = True,
+    include_admins: bool = True,
+) -> Dict[str, Any]:
+    """Gửi snapshot tồn kho hiện tại tới mọi user đã /start (USERS) + admin (tuỳ chọn)."""
+    token = (BOT_TOKEN or "").strip()
+    if not token or token == "PUT_YOUR_BOT_TOKEN_HERE":
+        return {"ok": 0, "fail": 0, "skipped": True, "reason": "no_bot_token"}
+
+    products, ready_map = await refresh_catalog_cache(force=True)
+    text = build_inventory_broadcast_text(products, ready_map, only_in_stock=only_in_stock)
+    kb = inventory_broadcast_keyboard()
+
+    recipients: List[int] = []
+    seen: set[int] = set()
+    for cid in await gs_call(get_all_user_chat_ids):
+        if cid not in seen:
+            seen.add(cid)
+            recipients.append(cid)
+    if include_admins:
+        for admin_id in ADMIN_IDS:
+            if admin_id not in seen:
+                seen.add(admin_id)
+                recipients.append(admin_id)
+
+    if not recipients:
+        return {"ok": 0, "fail": 0, "skipped": True, "reason": "no_recipients"}
+
+    ok = fail = 0
+    try:
+        async with Bot(token) as bot:
+            for cid in recipients:
+                try:
+                    await bot.send_message(
+                        chat_id=cid,
+                        text=text,
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=kb,
+                        disable_web_page_preview=True,
+                    )
+                    ok += 1
+                    await asyncio.sleep(0.05)
+                except Exception as e:
+                    fail += 1
+                    logger.warning("broadcast_inventory fail chat_id=%s err=%s", cid, e)
+    except Exception as e:
+        logger.exception("broadcast_inventory bot session failed: %s", e)
+        return {"ok": 0, "fail": len(recipients), "error": str(e)}
+
+    logger.info(
+        "broadcast_inventory_update recipients=%s sent=%s fail=%s only_in_stock=%s",
+        len(recipients), ok, fail, only_in_stock,
+    )
+    return {"ok": ok, "fail": fail, "recipients": len(recipients)}
+
+
+async def cmd_capnhatkho(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command: broadcast snapshot tồn kho cho mọi user đã /start.
+
+    Cách dùng:
+      /capnhatkho        -> chỉ gửi sản phẩm còn hàng (mặc định)
+      /capnhatkho all    -> gửi cả sản phẩm hết hàng
+    """
+    if not _is_admin_user(update):
+        return await _deny_non_admin(update)
+
+    arg = ""
+    if context.args:
+        arg = (context.args[0] or "").strip().lower()
+    only_in_stock = arg not in {"all", "full", "tatca", "tat-ca"}
+
+    note = await update.message.reply_text(
+        "📣 Đang gửi *Cập nhật kho hàng* cho tất cả khách đã /start…",
+        parse_mode="Markdown",
+    )
+    result = await broadcast_inventory_update(only_in_stock=only_in_stock)
+    try:
+        await note.edit_text(
+            (
+                f"✅ Đã gửi cập nhật kho hàng.\n"
+                f"• Đã gửi: *{result.get('ok', 0)}*\n"
+                f"• Lỗi: *{result.get('fail', 0)}*\n"
+                f"• Tổng người nhận: *{result.get('recipients', 0)}*\n"
+                f"• Chế độ: *{'Chỉ còn hàng' if only_in_stock else 'Toàn bộ'}*"
+            ),
+            parse_mode="Markdown",
+        )
+    except Exception:
+        await update.message.reply_text(
+            f"Đã gửi: {result.get('ok', 0)} | Lỗi: {result.get('fail', 0)}",
+        )
+
+
 async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     data = (q.data or "").strip()
@@ -3398,6 +3544,7 @@ def configure_application(app: Application) -> Application:
     app.add_handler(CommandHandler("mail", cmd_mail))
     app.add_handler(CommandHandler("2fa", cmd_2fa))
     app.add_handler(CommandHandler("otp", cmd_2fa))
+    app.add_handler(CommandHandler("capnhatkho", cmd_capnhatkho))
 
     app.add_handler(CallbackQueryHandler(callback_router))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))

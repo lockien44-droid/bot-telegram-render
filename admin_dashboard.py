@@ -502,6 +502,17 @@ def register_admin_routes(app: FastAPI) -> None:
         require_admin(request)
         return await asyncio.to_thread(run_backup)
 
+    @app.post("/admin/api/inventory/broadcast")
+    async def admin_broadcast_inventory(request: Request):
+        require_admin(request)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        only_in_stock = bool(body.get("only_in_stock", True))
+        from bot_shop import broadcast_inventory_update
+        return await broadcast_inventory_update(only_in_stock=only_in_stock)
+
     @app.post("/admin/api/products")
     async def admin_save_product(request: Request):
         require_admin(request)
