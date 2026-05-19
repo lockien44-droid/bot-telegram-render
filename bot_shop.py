@@ -107,6 +107,13 @@ PAYMENT_INFO = {
     "bank_number": os.getenv("BANK_NUMBER", "96247W4CBY").strip(),
     "note_template": os.getenv("NOTE_TEMPLATE", "{order_id}").strip(),
 }
+
+# Token đăng nhập của my.sepay.vn dùng để bot tự gọi UserAPI tìm giao dịch
+# khi user bấm "Kiểm tra thanh toán". Nếu trống thì bot chỉ re-check sheet.
+SEPAY_USERAPI_TOKEN = os.getenv("SEPAY_USERAPI_TOKEN", "").strip()
+SEPAY_USERAPI_URL = os.getenv(
+    "SEPAY_USERAPI_URL", "https://my.sepay.vn/userapi/transactions/list"
+).strip()
 # Support
 SUPPORT_ADMIN_NAME = os.getenv("SUPPORT_ADMIN_NAME", "Nguyễn Văn Minh").strip()
 SUPPORT_ZALO = os.getenv("SUPPORT_ZALO", "0342324611").strip()
@@ -395,6 +402,59 @@ def build_vietqr_image_url(order_id: str, amount: int) -> str:
         f"&addInfo={quote(add_info)}"
         f"&accountName={quote(name)}"
     )
+
+
+async def fetch_sepay_tx_for_order(
+    order_ref: str,
+    expect_amount: int = 0,
+    limit: int = 20,
+) -> Optional[Dict[str, Any]]:
+    """Gọi SePay UserAPI tìm giao dịch IN khớp `order_ref` (và đúng số tiền nếu CHECK_AMOUNT).
+    Trả None nếu không có token, không tìm thấy hoặc có lỗi mạng."""
+    if not SEPAY_USERAPI_TOKEN:
+        return None
+
+    acc = (PAYMENT_INFO.get("bank_number") or "").strip()
+    if not acc:
+        return None
+
+    params = {"account_number": acc, "limit": str(limit)}
+    headers = {"Authorization": f"Bearer {SEPAY_USERAPI_TOKEN}"}
+
+    try:
+        r = await _get_http_client().get(
+            SEPAY_USERAPI_URL, params=params, headers=headers, timeout=8.0
+        )
+    except Exception as e:
+        logger.warning("SePay userapi request failed: %s", e)
+        return None
+
+    if r.status_code != 200:
+        logger.warning("SePay userapi status=%s body=%s", r.status_code, r.text[:200])
+        return None
+
+    try:
+        data = r.json() or {}
+    except Exception as e:
+        logger.warning("SePay userapi json decode failed: %s", e)
+        return None
+
+    txs = data.get("transactions") or data.get("data") or []
+    ref_up = (order_ref or "").upper()
+    for tx in txs:
+        if (tx.get("transaction_type") or "").lower() in {"out", "debit"}:
+            continue
+        content = (tx.get("transaction_content") or tx.get("content") or "").upper()
+        try:
+            amt_in = int(float(tx.get("amount_in") or tx.get("amountIn") or 0))
+        except Exception:
+            amt_in = 0
+        if not ref_up or ref_up not in content:
+            continue
+        if expect_amount and amt_in < expect_amount:
+            continue
+        return tx
+    return None
 
 
 async def fetch_qr_bytes(url: str, timeout: int = 12) -> Optional[bytes]:
@@ -1558,7 +1618,7 @@ def qty_select_kb(pid: str) -> InlineKeyboardMarkup:
 def checkout_keyboard_pending(order_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("✅ Xác nhận đã thanh toán", callback_data=f"confirm|{order_id}"),
+            InlineKeyboardButton("🔎 Kiểm tra thanh toán", callback_data=f"confirm|{order_id}"),
             InlineKeyboardButton("❌ Huỷ đơn", callback_data=f"cancel|{order_id}"),
         ],
         [InlineKeyboardButton("⬅️ Menu chính", callback_data="back_main")],
@@ -2325,24 +2385,71 @@ async def confirm_paid(update: Update, context: ContextTypes.DEFAULT_TYPE, order
     status = (order.get("status", "") or "PENDING").upper()
     stock_code = (order.get("stock_code") or "").strip()
 
-    # Nếu chưa PAID -> thông báo kiểm tra
     if status not in ("PAID", "DELIVERED"):
-        await context.bot.send_message(
-            chat_id=q.from_user.id,
-            text=(
-                "⏳ *Đang kiểm tra giao dịch...*\n\n"
-                "⌛ Vui lòng đợi trong giây lát...\n\n"
-                "*CHƯA TÌM THẤY GIAO DỊCH*\n"
-                "Hệ thống chưa phát hiện thanh toán của bạn.\n\n"
-                "💡 Vui lòng:\n"
-                "• Đợi thêm vài giây\n"
-                "• Kiểm tra lại nội dung chuyển khoản\n"
-                "• Thử lại sau"
-            ),
-            parse_mode="Markdown",
-            reply_markup=main_menu_keyboard(),
-        )
-        return
+        try:
+            await q.answer("🔎 Đang kiểm tra giao dịch…")
+        except Exception:
+            pass
+
+        # 1) Thử gọi SePay UserAPI tìm giao dịch khớp (nếu đã cấu hình token)
+        pay_ref = normalize_order_ref(order_id)
+        expect_amt = normalize_int(order.get("total"), 0)
+        tx = await fetch_sepay_tx_for_order(pay_ref, expect_amount=expect_amt)
+
+        if tx:
+            payload = {
+                "id": tx.get("id") or tx.get("transaction_id") or "",
+                "transferType": "in",
+                "transferAmount": int(tx.get("amount_in") or tx.get("amountIn") or expect_amt),
+                "content": tx.get("transaction_content") or tx.get("content") or pay_ref,
+                "description": tx.get("transaction_content") or tx.get("content") or pay_ref,
+                "referenceCode": tx.get("reference_number") or tx.get("referenceCode") or "",
+                "transactionDate": tx.get("transaction_date") or tx.get("transactionDate") or now_str(),
+            }
+            try:
+                from sepay_webhook import process_payment as _sepay_process
+                await _sepay_process(payload)
+            except Exception as e:
+                logger.warning("manual SePay process_payment failed for %s: %s", order_id, e)
+
+            # Re-fetch sau khi process_payment đã đụng vào order
+            order = await gs_call(get_order, order_id) or order
+            status = (order.get("status", "") or "PENDING").upper()
+
+        # 2) Nếu vẫn chưa PAID/DELIVERED — wait nhẹ rồi đọc lại sheet (đề phòng webhook đến trễ)
+        if status not in ("PAID", "DELIVERED"):
+            await asyncio.sleep(2.0)
+            order = await gs_call(get_order, order_id) or order
+            status = (order.get("status", "") or "PENDING").upper()
+
+        # 3) Nếu PAID/DELIVERED — đi tiếp vào nhánh giao hàng phía dưới
+        if status in ("PAID", "DELIVERED"):
+            pass
+        else:
+            remain = remaining_seconds(order.get("created_at", ""), ORDER_TTL_SECONDS)
+            remain_min = max(0, remain // 60)
+            remain_sec = max(0, remain % 60)
+            ttl_line = (
+                f"⏳ Đơn còn *{remain_min}p{remain_sec:02d}s* trước khi hết hạn.\n"
+                if remain > 0 else "⌛ Đơn đã hết hạn, vui lòng tạo đơn mới.\n"
+            )
+            await context.bot.send_message(
+                chat_id=q.from_user.id,
+                text=(
+                    "🔍 *Chưa tìm thấy giao dịch khớp đơn này.*\n\n"
+                    f"🧾 Mã đơn: `{order_id}`\n"
+                    f"💰 Cần thanh toán: *{fmt_price(normalize_int(order.get('total'), 0))}*\n"
+                    f"📝 Nội dung CK: `{pay_ref}`\n\n"
+                    f"{ttl_line}\n"
+                    "💡 Nếu bạn vừa chuyển xong:\n"
+                    "• Đợi 5–10 giây cho ngân hàng/SePay xử lý\n"
+                    "• Bấm *Kiểm tra thanh toán* lại\n"
+                    "• Đảm bảo nội dung CK *đúng mã đơn*\n"
+                    "• Số tiền *bằng đúng* số trên QR"
+                ),
+                parse_mode="Markdown",
+            )
+            return
 
     # ================== RESEND nếu đã DELIVERED ==================
     if status == "DELIVERED":
