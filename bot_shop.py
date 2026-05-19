@@ -2499,6 +2499,7 @@ async def confirm_paid(update: Update, context: ContextTypes.DEFAULT_TYPE, order
         expect_amt = normalize_int(order.get("total"), 0)
         tx = await fetch_sepay_tx_for_order(pay_ref, expect_amount=expect_amt)
 
+        delivered_via_userapi = False
         if tx:
             payload = {
                 "id": tx.get("id") or tx.get("transaction_id") or "",
@@ -2518,6 +2519,7 @@ async def confirm_paid(update: Update, context: ContextTypes.DEFAULT_TYPE, order
             # Re-fetch sau khi process_payment đã đụng vào order
             order = await gs_call(get_order, order_id) or order
             status = (order.get("status", "") or "PENDING").upper()
+            delivered_via_userapi = status == "DELIVERED"
 
         # 2) Nếu vẫn chưa PAID/DELIVERED — wait nhẹ rồi đọc lại sheet (đề phòng webhook đến trễ)
         if status not in ("PAID", "DELIVERED"):
@@ -2525,7 +2527,41 @@ async def confirm_paid(update: Update, context: ContextTypes.DEFAULT_TYPE, order
             order = await gs_call(get_order, order_id) or order
             status = (order.get("status", "") or "PENDING").upper()
 
-        # 3) Nếu PAID/DELIVERED — đi tiếp vào nhánh giao hàng phía dưới
+        # 3) Nếu process_payment đã DELIVERED ngay -> QR + check miss đã xoá,
+        #    delivery .txt đã gửi. Dọn nốt rồi return để tránh resend trùng lặp.
+        if delivered_via_userapi:
+            try:
+                qr_msg_id = (order.get("qr_msg_id") or "").strip()
+                if qr_msg_id.isdigit():
+                    try:
+                        await context.bot.delete_message(
+                            chat_id=q.from_user.id, message_id=int(qr_msg_id)
+                        )
+                    except Exception:
+                        try:
+                            await context.bot.edit_message_reply_markup(
+                                chat_id=q.from_user.id,
+                                message_id=int(qr_msg_id),
+                                reply_markup=None,
+                            )
+                        except Exception:
+                            pass
+                # Fallback: thử xoá luôn callback message nếu khác qr_msg_id
+                try:
+                    if q.message and q.message.message_id and (
+                        not qr_msg_id.isdigit() or int(qr_msg_id) != q.message.message_id
+                    ):
+                        await context.bot.delete_message(
+                            chat_id=q.from_user.id, message_id=q.message.message_id
+                        )
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            await cleanup_check_miss_messages(context.bot, order_id)
+            return
+
+        # Nếu PAID/DELIVERED qua webhook khác — đi tiếp vào nhánh giao hàng phía dưới
         if status in ("PAID", "DELIVERED"):
             pass
         else:
@@ -2561,6 +2597,14 @@ async def confirm_paid(update: Update, context: ContextTypes.DEFAULT_TYPE, order
     # ================== RESEND nếu đã DELIVERED ==================
     if status == "DELIVERED":
         await cleanup_check_miss_messages(context.bot, order_id)
+        # Xoá QR (cả qr_msg_id trong order lẫn callback message) trước khi gửi lại
+        qr_msg_id_str = (order.get("qr_msg_id") or "").strip()
+        for mid in {qr_msg_id_str, str(q.message.message_id) if q.message else ""}:
+            if mid.isdigit():
+                try:
+                    await context.bot.delete_message(chat_id=q.from_user.id, message_id=int(mid))
+                except Exception:
+                    pass
         delivered_at = (order.get("delivered_at") or now_str()).strip()
 
         deliver_text_plain = (order.get("deliver_text") or "").strip()
@@ -2699,22 +2743,27 @@ async def confirm_paid(update: Update, context: ContextTypes.DEFAULT_TYPE, order
     # stop countdown job
     remove_jobs_by_prefix(context.application, f"countdown_{order_id}")
 
-    # edit checkout message -> best effort
-    delivered_caption = (
-        "✅ *ĐÃ GIAO HÀNG*\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        f"🧾 *Mã đơn:* `{order_id}`\n"
-        f"📦 *SP:* `{stock_code}`\n"
-        f"⏱ *Thời gian:* {delivered_at}\n\n"
-        "📩 Mình đã gửi thông tin nhận được ở tin nhắn bên dưới."
-    )
-    try:
-        await q.edit_message_caption(caption=delivered_caption, parse_mode="Markdown", reply_markup=checkout_keyboard_done())
-    except Exception:
+    # Xoá tin nhắn QR + nút "Kiểm tra thanh toán/Huỷ đơn" khi giao hàng thành công.
+    qr_msg_id_str = (order.get("qr_msg_id") or "").strip()
+    qr_deleted_ids: set[int] = set()
+    candidate_ids: List[int] = []
+    if qr_msg_id_str.isdigit():
+        candidate_ids.append(int(qr_msg_id_str))
+    if q.message and q.message.message_id:
+        candidate_ids.append(q.message.message_id)
+    for mid in candidate_ids:
+        if mid in qr_deleted_ids:
+            continue
         try:
-            await q.edit_message_text(text=delivered_caption, parse_mode="Markdown", reply_markup=checkout_keyboard_done())
+            await context.bot.delete_message(chat_id=q.from_user.id, message_id=mid)
+            qr_deleted_ids.add(mid)
         except Exception:
-            pass
+            try:
+                await context.bot.edit_message_reply_markup(
+                    chat_id=q.from_user.id, message_id=mid, reply_markup=None
+                )
+            except Exception:
+                pass
 
     qty_val = normalize_int(order.get("qty"), len(secrets_plain) if secrets_plain else len(items))
 
