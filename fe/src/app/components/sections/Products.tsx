@@ -16,7 +16,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "../ui/alert-dialog";
-import { Plus, Pencil, Package, Trash2 } from "lucide-react";
+import { Plus, Pencil, Package, Trash2, Megaphone } from "lucide-react";
 import { toast } from "sonner";
 import { adminApi, money, text, type AdminSnapshot, type AnyRow } from "../../api";
 
@@ -36,6 +36,41 @@ export function Products({ data, adminKey, refresh, embedded, onAddStock }: Prop
   const [saving, setSaving] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<AnyRow | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [broadcasting, setBroadcasting] = useState(false);
+
+  const broadcastInventory = async () => {
+    if (
+      !window.confirm(
+        "Gửi danh sách sản phẩm còn hàng tới tất cả khách đã /start bot?",
+      )
+    ) {
+      return;
+    }
+    setBroadcasting(true);
+    try {
+      const result = await adminApi<{
+        ok?: number;
+        fail?: number;
+        recipients?: number;
+        skipped?: boolean;
+        reason?: string;
+      }>("/admin/api/inventory/broadcast", adminKey, {
+        method: "POST",
+        body: JSON.stringify({ only_in_stock: true }),
+      });
+      if (result.skipped) {
+        toast.warning(`Không gửi được: ${result.reason || "unknown"}`);
+      } else {
+        toast.success(
+          `Đã gửi tới ${result.ok ?? 0}/${result.recipients ?? 0} người${(result.fail ?? 0) ? ` (${result.fail} lỗi)` : ""}`,
+        );
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Gửi cập nhật kho thất bại");
+    } finally {
+      setBroadcasting(false);
+    }
+  };
 
   const openAdd = () => { setForm({ ...EMPTY }); setModalOpen(true); };
   const openEdit = (p: AnyRow) => {
@@ -96,9 +131,21 @@ export function Products({ data, adminKey, refresh, embedded, onAddStock }: Prop
 
   return (
     <div className="space-y-4">
-      <div className={`flex items-center gap-2 ${embedded ? "justify-end" : "justify-between"}`}>
+      <div className={`flex items-center gap-2 flex-wrap ${embedded ? "justify-end" : "justify-between"}`}>
         {!embedded && <h2 className="flex items-center gap-2"><Package size={20} /> Sản phẩm</h2>}
-        <Button size="sm" className="gap-1.5" onClick={openAdd}><Plus size={15} /> Thêm sản phẩm</Button>
+        <div className="flex items-center gap-2 flex-wrap">
+          <Button
+            size="sm"
+            variant="outline"
+            className="gap-1.5"
+            onClick={broadcastInventory}
+            disabled={broadcasting}
+            title="Thông báo danh sách sản phẩm còn hàng tới tất cả khách đã /start"
+          >
+            <Megaphone size={15} /> {broadcasting ? "Đang gửi..." : "Cập nhật kho cho khách"}
+          </Button>
+          <Button size="sm" className="gap-1.5" onClick={openAdd}><Plus size={15} /> Thêm sản phẩm</Button>
+        </div>
       </div>
 
       {onAddStock && (
