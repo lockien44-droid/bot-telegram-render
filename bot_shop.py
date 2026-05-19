@@ -2222,17 +2222,34 @@ async def checkout_flow(
     ready = ready_map.get(product["stock_code"], 0)
 
     if qty > ready:
-        msg = f"❌ Kho không đủ.\nCòn lại: {ready} | Bạn chọn: {qty}"
+        msg = (
+            f"❌ *Kho không đủ.*\n"
+            f"Còn lại: *{ready}* | Bạn chọn: *{qty}*\n\n"
+            "Bạn có thể chọn lại số lượng nhỏ hơn:"
+        )
+        retry_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔁 Chọn lại số lượng", callback_data=f"buy|{pid}")],
+            [InlineKeyboardButton("⬅️ Quay lại sản phẩm", callback_data="back_products")],
+        ])
         if from_custom_qty:
             await _ask_retry(msg)
             return False
         if edit_query:
             try:
-                await edit_query.edit_message_text(msg)
+                await edit_query.edit_message_text(
+                    msg, parse_mode="Markdown", reply_markup=retry_kb
+                )
             except Exception:
-                pass
+                try:
+                    await context.bot.send_message(
+                        chat_id=user_id, text=msg, parse_mode="Markdown", reply_markup=retry_kb
+                    )
+                except Exception:
+                    pass
         else:
-            await context.bot.send_message(chat_id=user_id, text=msg, reply_markup=main_menu_keyboard())
+            await context.bot.send_message(
+                chat_id=user_id, text=msg, parse_mode="Markdown", reply_markup=retry_kb
+            )
         return False
 
     if edit_query:
