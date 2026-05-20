@@ -111,6 +111,19 @@ def parse_admin_ids(raw: str) -> set[int]:
 
 ADMIN_IDS = parse_admin_ids(os.getenv("ADMIN_IDS", ""))
 
+# Chống spam broadcast (/hangve, cập nhật kho) — mặc định 5 phút / loại
+BROADCAST_COOLDOWN_SEC = max(60, int(os.getenv("BROADCAST_COOLDOWN_SEC", "300")))
+# Gửi Telegram admin khi khách /start (0 = chỉ ghi sheet dashboard)
+START_NOTIFY_TELEGRAM = os.getenv("START_NOTIFY_TELEGRAM", "1").strip().lower() in ("1", "true", "yes")
+START_NOTIFY_TELEGRAM_COOLDOWN_SEC = max(
+    15, int(os.getenv("START_NOTIFY_TELEGRAM_COOLDOWN_SEC", "45"))
+)
+
+_BROADCAST_LOCK = asyncio.Lock()
+_LAST_BROADCAST_AT: Dict[str, float] = {}
+_START_NOTIFY_LAST_TELEGRAM = 0.0
+_START_NOTIFY_PENDING_COUNT = 0
+
 ORDER_TTL_SECONDS = int(os.getenv("ORDER_TTL_SECONDS", "300"))  # 5 phút
 # Đơn hiển thị cho khách: giao thành công + đang chờ thanh toán (PAID/PENDING)
 USER_ORDER_VISIBLE_STATUSES = {"DELIVERED", "PAID", "PENDING"}
@@ -281,20 +294,22 @@ def money_vnd(value: Any) -> str:
 
 
 async def notify_admins(
-    context: ContextTypes.DEFAULT_TYPE,
+    context: Optional[ContextTypes.DEFAULT_TYPE],
     text: str,
     reply_markup=None,
     *,
+    bot: Optional[Bot] = None,
     exclude_chat_ids: Optional[set[int]] = None,
 ) -> None:
-    if not ADMIN_IDS:
+    send_bot = bot or (context.bot if context else None)
+    if not send_bot or not ADMIN_IDS:
         return
     skip = exclude_chat_ids or set()
     for admin_id in ADMIN_IDS:
         if admin_id in skip:
             continue
         try:
-            await context.bot.send_message(
+            await send_bot.send_message(
                 chat_id=admin_id,
                 text=text,
                 parse_mode=ParseMode.MARKDOWN_V2,
@@ -309,30 +324,67 @@ def _esc_md2(value: Any) -> str:
     return escape_markdown(str(value or ""), version=2)
 
 
+def _broadcast_cooldown_block(kind: str) -> Optional[str]:
+    """Trả về thông báo nếu đang trong cooldown, ngược lại None."""
+    last = _LAST_BROADCAST_AT.get(kind, 0.0)
+    elapsed = time.time() - last
+    if elapsed < BROADCAST_COOLDOWN_SEC:
+        remain = int(BROADCAST_COOLDOWN_SEC - elapsed)
+        return f"⏳ Vừa gửi broadcast «{kind}». Đợi thêm {remain}s (chống gửi lặp)."
+    return None
+
+
+def _mark_broadcast_sent(kind: str) -> None:
+    _LAST_BROADCAST_AT[kind] = time.time()
+
+
+async def _collect_broadcast_recipients(*, include_admins: bool = False) -> List[int]:
+    """Danh sách chat_id nhận tin hàng loạt — mặc định không gửi lại cho admin."""
+    recipients: List[int] = []
+    seen: set[int] = set()
+    admin_set = set(ADMIN_IDS)
+    for cid in await gs_call(get_all_user_chat_ids):
+        if cid in seen:
+            continue
+        if not include_admins and cid in admin_set:
+            continue
+        seen.add(cid)
+        recipients.append(cid)
+    if include_admins:
+        for admin_id in ADMIN_IDS:
+            if admin_id not in seen:
+                seen.add(admin_id)
+                recipients.append(admin_id)
+    return recipients
+
+
 async def notify_admins_order_event(
-    context: ContextTypes.DEFAULT_TYPE,
+    context: Optional[ContextTypes.DEFAULT_TYPE],
     event: str,
     order: Dict[str, Any],
     *,
+    bot: Optional[Bot] = None,
     released: int = 0,
     actor_id: Optional[int] = None,
 ) -> None:
     """Telegram cho admin (nếu có ADMIN_IDS) + luôn ghi dòng lên sheet notifications (dashboard)."""
-    if context and ADMIN_IDS:
+    send_bot = bot or (context.bot if context else None)
+    if send_bot and ADMIN_IDS:
         oid = _esc_md2(order.get("order_id"))
         uid = _esc_md2(order.get("user_id"))
         stock = _esc_md2(order.get("stock_code"))
         qty = _esc_md2(order.get("qty"))
         total = _esc_md2(money_vnd(order.get("total")))
         created = _esc_md2(order.get("created_at"))
+        delivered_at = _esc_md2(order.get("delivered_at"))
         status = _esc_md2((order.get("status") or "").upper())
 
         titles = {
             "new": "🛒 *Đơn mới chờ thanh toán*",
             "cancelled": "❌ *Đơn đã huỷ*",
             "expired": "⌛ *Đơn hết hạn*",
-            "delivered": "✅ *Đơn đã giao*",
-            "paid": "💰 *Đơn đã thanh toán*",
+            "delivered": "✅ *Khách mua thành công*",
+            "paid": "💰 *Đã thanh toán \\(chờ giao / lỗi kho\\)*",
         }
         title = titles.get(event, "📦 *Cập nhật đơn hàng*")
 
@@ -346,6 +398,8 @@ async def notify_admins_order_event(
             f"Trạng thái: `{status}`",
             f"Tạo lúc: `{created}`",
         ]
+        if delivered_at and event in ("delivered", "paid"):
+            lines.append(f"Giao lúc: `{delivered_at}`")
         if released:
             lines.append(f"Trả kho: `{released}` item")
         if actor_id is not None:
@@ -360,7 +414,9 @@ async def notify_admins_order_event(
         except Exception:
             pass
 
-        await notify_admins(context, "\n".join(lines), exclude_chat_ids=skip_ids)
+        await notify_admins(
+            context, "\n".join(lines), bot=send_bot, exclude_chat_ids=skip_ids
+        )
 
     try:
         await gs_call(append_dashboard_notification_row_sync, event, order, released, actor_id)
@@ -391,18 +447,35 @@ async def notify_user_start_event(
     except Exception as e:
         logger.warning("notify_user_start_event sheet failed: %s", e)
 
-    if context and ADMIN_IDS:
+    global _START_NOTIFY_LAST_TELEGRAM, _START_NOTIFY_PENDING_COUNT
+    if context and ADMIN_IDS and START_NOTIFY_TELEGRAM:
+        now = time.time()
+        _START_NOTIFY_PENDING_COUNT += 1
+        if now - _START_NOTIFY_LAST_TELEGRAM < START_NOTIFY_TELEGRAM_COOLDOWN_SEC:
+            return
+        _START_NOTIFY_LAST_TELEGRAM = now
+        pending = _START_NOTIFY_PENDING_COUNT
+        _START_NOTIFY_PENDING_COUNT = 0
+
         name = _esc_md2(full_name or "Khách")
         user_line = _esc_md2(uname)
         uid = _esc_md2(user_id)
-        await notify_admins(
-            context,
-            "\n".join([
+        if pending <= 1:
+            lines = [
                 "👋 *Khách vừa /start bot*",
                 f"Tên: *{name}*",
                 f"User: `{user_line}`",
                 f"ID: `{uid}`",
-            ]),
+            ]
+        else:
+            lines = [
+                f"👋 *{pending} khách vừa /start bot*",
+                f"Vừa nhất: *{name}* · `{user_line}` · ID `{uid}`",
+                "_Chi tiết đầy đủ trên dashboard → Thông báo._",
+            ]
+        await notify_admins(
+            context,
+            "\n".join(lines),
             exclude_chat_ids={user_id},
         )
 
@@ -872,7 +945,7 @@ def append_dashboard_notification_row_sync(
         "new": "Đơn mới chờ thanh toán",
         "cancelled": "Đơn đã huỷ",
         "expired": "Đơn hết hạn",
-        "delivered": "Đơn đã giao",
+        "delivered": "Khách mua thành công",
         "paid": "Đơn đã thanh toán",
     }
     title = titles_plain.get(event, "Cập nhật đơn hàng")
@@ -3722,32 +3795,66 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ================== CALLBACK ROUTER ==================
 # ✅ Sửa lại cmd_hangve (copy đè lên hàm cũ)
 async def cmd_hangve(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # chỉ admin được dùng
     if update.effective_user.id not in ADMIN_IDS:
         return
 
-    text = " ".join(context.args).strip()
+    args = list(context.args or [])
+    if not args or args[0].lower() != "confirm":
+        await update.message.reply_text(
+            "⚠️ *Broadcast toàn bộ khách* — tránh gửi nhầm/lặp.\n\n"
+            "Gõ:\n"
+            "`/hangve confirm <nội dung tin nhắn>`\n\n"
+            f"Mỗi lần gửi cách nhau tối thiểu *{BROADCAST_COOLDOWN_SEC // 60} phút*.\n"
+            "Admin *không* nhận lại tin broadcast (chỉ khách đã /start).",
+            parse_mode="Markdown",
+        )
+        return
+
+    text = " ".join(args[1:]).strip()
     if not text:
         text = "✅ *HÀNG ĐÃ VỀ*\n\n🔥 Sản phẩm đã có hàng lại!\n👉 Vào /shop để mua nhé."
 
-    user_ids = await gs_call(get_all_user_chat_ids)
+    blocked = _broadcast_cooldown_block("hangve")
+    if blocked:
+        return await update.message.reply_text(blocked)
 
-    ok = fail = 0
-    for cid in user_ids:
+    if _BROADCAST_LOCK.locked():
+        return await update.message.reply_text("⏳ Đang gửi broadcast khác, vui lòng đợi xong.")
+
+    async with _BROADCAST_LOCK:
+        blocked = _broadcast_cooldown_block("hangve")
+        if blocked:
+            return await update.message.reply_text(blocked)
+
+        user_ids = await _collect_broadcast_recipients(include_admins=False)
+        if not user_ids:
+            return await update.message.reply_text("❌ Không có khách nào trong sheet USERS.")
+
+        progress = await update.message.reply_text(
+            f"📣 Đang gửi tới *{len(user_ids)}* khách…",
+            parse_mode="Markdown",
+        )
+
+        ok = fail = 0
+        for cid in user_ids:
+            try:
+                await context.bot.send_message(
+                    chat_id=cid,
+                    text=text,
+                    parse_mode="Markdown",
+                    disable_web_page_preview=True,
+                )
+                ok += 1
+                await asyncio.sleep(0.05)
+            except Exception as e:
+                fail += 1
+                logger.warning("send hangve fail chat_id=%s err=%s", cid, e)
+
+        _mark_broadcast_sent("hangve")
         try:
-            await context.bot.send_message(
-                chat_id=cid,
-                text=text,
-                parse_mode="Markdown",
-                disable_web_page_preview=True,
-            )
-            ok += 1
-            await asyncio.sleep(0.05)  # chống rate limit nhẹ
-        except Exception as e:
-            fail += 1
-            logger.warning("send hangve fail chat_id=%s err=%s", cid, e)
-
-    await update.message.reply_text(f"Đã gửi: {ok} | Lỗi: {fail}")
+            await progress.edit_text(f"✅ Đã gửi: *{ok}* | Lỗi: *{fail}* | Tổng: *{len(user_ids)}* khách")
+        except Exception:
+            await update.message.reply_text(f"Đã gửi: {ok} | Lỗi: {fail}")
 
 
 def stock_update_text(product_name: str, price: int, added: int, total_ready: int) -> str:
@@ -3833,56 +3940,64 @@ async def broadcast_stock_update(stock_code: str, added_count: int) -> Dict[str,
 
     text = stock_update_text(product_name, price, added_count, total_ready)
     kb = stock_update_keyboard(product_id or None)
-
-    recipients: List[int] = []
-    seen: set[int] = set()
-    for cid in await gs_call(get_all_user_chat_ids):
-        if cid not in seen:
-            seen.add(cid)
-            recipients.append(cid)
-    for admin_id in ADMIN_IDS:
-        if admin_id not in seen:
-            seen.add(admin_id)
-            recipients.append(admin_id)
-
     extra = f"{product_name} (+{added_count}, tổng {total_ready})"
 
-    if not recipients:
-        logger.warning("broadcast_stock_update: không có người nhận (USERS trống và ADMIN_IDS rỗng)")
-        result = {"ok": 0, "fail": 0, "skipped": True, "reason": "no_recipients"}
+    blocked = _broadcast_cooldown_block("stock")
+    if blocked:
+        result = {"ok": 0, "fail": 0, "skipped": True, "reason": "cooldown"}
+        await _log_broadcast_to_dashboard("broadcast_stock", "Nhập kho", result, extra=blocked)
+        return result
+
+    if _BROADCAST_LOCK.locked():
+        result = {"ok": 0, "fail": 0, "skipped": True, "reason": "broadcast_busy"}
         await _log_broadcast_to_dashboard("broadcast_stock", "Nhập kho", result, extra=extra)
         return result
 
-    ok = fail = 0
-    try:
-        async with Bot(token) as bot:
-            for cid in recipients:
-                try:
-                    await bot.send_message(
-                        chat_id=cid,
-                        text=text,
-                        parse_mode=ParseMode.MARKDOWN,
-                        reply_markup=kb,
-                        disable_web_page_preview=True,
-                    )
-                    ok += 1
-                    await asyncio.sleep(0.05)
-                except Exception as e:
-                    fail += 1
-                    logger.warning("broadcast_stock_update fail chat_id=%s err=%s", cid, e)
-    except Exception as e:
-        logger.exception("broadcast_stock_update bot session failed: %s", e)
-        result = {"ok": 0, "fail": len(recipients), "error": str(e)}
+    async with _BROADCAST_LOCK:
+        blocked = _broadcast_cooldown_block("stock")
+        if blocked:
+            result = {"ok": 0, "fail": 0, "skipped": True, "reason": "cooldown"}
+            await _log_broadcast_to_dashboard("broadcast_stock", "Nhập kho", result, extra=blocked)
+            return result
+
+        recipients = await _collect_broadcast_recipients(include_admins=False)
+        if not recipients:
+            logger.warning("broadcast_stock_update: không có người nhận trong USERS")
+            result = {"ok": 0, "fail": 0, "skipped": True, "reason": "no_recipients"}
+            await _log_broadcast_to_dashboard("broadcast_stock", "Nhập kho", result, extra=extra)
+            return result
+
+        ok = fail = 0
+        try:
+            async with Bot(token) as bot:
+                for cid in recipients:
+                    try:
+                        await bot.send_message(
+                            chat_id=cid,
+                            text=text,
+                            parse_mode=ParseMode.MARKDOWN,
+                            reply_markup=kb,
+                            disable_web_page_preview=True,
+                        )
+                        ok += 1
+                        await asyncio.sleep(0.05)
+                    except Exception as e:
+                        fail += 1
+                        logger.warning("broadcast_stock_update fail chat_id=%s err=%s", cid, e)
+        except Exception as e:
+            logger.exception("broadcast_stock_update bot session failed: %s", e)
+            result = {"ok": 0, "fail": len(recipients), "error": str(e)}
+            await _log_broadcast_to_dashboard("broadcast_stock", "Nhập kho", result, extra=extra)
+            return result
+
+        _mark_broadcast_sent("stock")
+        logger.info(
+            "broadcast_stock_update stock=%s added=%s total_ready=%s recipients=%s sent=%s fail=%s",
+            stock_code, added_count, total_ready, len(recipients), ok, fail,
+        )
+        result = {"ok": ok, "fail": fail, "recipients": len(recipients)}
         await _log_broadcast_to_dashboard("broadcast_stock", "Nhập kho", result, extra=extra)
         return result
-
-    logger.info(
-        "broadcast_stock_update stock=%s added=%s total_ready=%s recipients=%s sent=%s fail=%s",
-        stock_code, added_count, total_ready, len(recipients), ok, fail,
-    )
-    result = {"ok": ok, "fail": fail, "recipients": len(recipients)}
-    await _log_broadcast_to_dashboard("broadcast_stock", "Nhập kho", result, extra=extra)
-    return result
 
 
 # ================== BROADCAST: Cập nhật kho hàng (full snapshot) ==================
@@ -3942,9 +4057,9 @@ def inventory_broadcast_keyboard() -> InlineKeyboardMarkup:
 
 async def broadcast_inventory_update(
     only_in_stock: bool = True,
-    include_admins: bool = True,
+    include_admins: bool = False,
 ) -> Dict[str, Any]:
-    """Gửi snapshot tồn kho hiện tại tới mọi user đã /start (USERS) + admin (tuỳ chọn).
+    """Gửi snapshot tồn kho hiện tại tới mọi user đã /start (USERS).
 
     Kết quả mọi nhánh đều ghi 1 dòng vào sheet ``notifications`` để dashboard
     hiện số user đã /start đã nhận được tin.
@@ -3960,63 +4075,71 @@ async def broadcast_inventory_update(
         )
         return result
 
-    products, ready_map = await refresh_catalog_cache(force=True)
-    text = build_inventory_broadcast_text(products, ready_map, only_in_stock=only_in_stock)
-    kb = inventory_broadcast_keyboard()
+    blocked = _broadcast_cooldown_block("inventory")
+    if blocked:
+        result = {"ok": 0, "fail": 0, "skipped": True, "reason": "cooldown"}
+        await _log_broadcast_to_dashboard("broadcast_inventory", "Cập nhật kho", result, extra=blocked)
+        return result
 
-    recipients: List[int] = []
-    seen: set[int] = set()
-    for cid in await gs_call(get_all_user_chat_ids):
-        if cid not in seen:
-            seen.add(cid)
-            recipients.append(cid)
-    if include_admins:
-        for admin_id in ADMIN_IDS:
-            if admin_id not in seen:
-                seen.add(admin_id)
-                recipients.append(admin_id)
+    if _BROADCAST_LOCK.locked():
+        result = {"ok": 0, "fail": 0, "skipped": True, "reason": "broadcast_busy"}
+        await _log_broadcast_to_dashboard("broadcast_inventory", "Cập nhật kho", result, extra=extra)
+        return result
 
-    if not recipients:
-        result = {"ok": 0, "fail": 0, "skipped": True, "reason": "no_recipients"}
+    async with _BROADCAST_LOCK:
+        blocked = _broadcast_cooldown_block("inventory")
+        if blocked:
+            result = {"ok": 0, "fail": 0, "skipped": True, "reason": "cooldown"}
+            await _log_broadcast_to_dashboard("broadcast_inventory", "Cập nhật kho", result, extra=blocked)
+            return result
+
+        products, ready_map = await refresh_catalog_cache(force=True)
+        text = build_inventory_broadcast_text(products, ready_map, only_in_stock=only_in_stock)
+        kb = inventory_broadcast_keyboard()
+        recipients = await _collect_broadcast_recipients(include_admins=include_admins)
+
+        if not recipients:
+            result = {"ok": 0, "fail": 0, "skipped": True, "reason": "no_recipients"}
+            await _log_broadcast_to_dashboard(
+                "broadcast_inventory", "Cập nhật kho", result, extra=extra,
+            )
+            return result
+
+        ok = fail = 0
+        try:
+            async with Bot(token) as bot:
+                for cid in recipients:
+                    try:
+                        await bot.send_message(
+                            chat_id=cid,
+                            text=text,
+                            parse_mode=ParseMode.MARKDOWN,
+                            reply_markup=kb,
+                            disable_web_page_preview=True,
+                        )
+                        ok += 1
+                        await asyncio.sleep(0.05)
+                    except Exception as e:
+                        fail += 1
+                        logger.warning("broadcast_inventory fail chat_id=%s err=%s", cid, e)
+        except Exception as e:
+            logger.exception("broadcast_inventory bot session failed: %s", e)
+            result = {"ok": 0, "fail": len(recipients), "error": str(e)}
+            await _log_broadcast_to_dashboard(
+                "broadcast_inventory", "Cập nhật kho", result, extra=extra,
+            )
+            return result
+
+        _mark_broadcast_sent("inventory")
+        logger.info(
+            "broadcast_inventory_update recipients=%s sent=%s fail=%s only_in_stock=%s",
+            len(recipients), ok, fail, only_in_stock,
+        )
+        result = {"ok": ok, "fail": fail, "recipients": len(recipients)}
         await _log_broadcast_to_dashboard(
             "broadcast_inventory", "Cập nhật kho", result, extra=extra,
         )
         return result
-
-    ok = fail = 0
-    try:
-        async with Bot(token) as bot:
-            for cid in recipients:
-                try:
-                    await bot.send_message(
-                        chat_id=cid,
-                        text=text,
-                        parse_mode=ParseMode.MARKDOWN,
-                        reply_markup=kb,
-                        disable_web_page_preview=True,
-                    )
-                    ok += 1
-                    await asyncio.sleep(0.05)
-                except Exception as e:
-                    fail += 1
-                    logger.warning("broadcast_inventory fail chat_id=%s err=%s", cid, e)
-    except Exception as e:
-        logger.exception("broadcast_inventory bot session failed: %s", e)
-        result = {"ok": 0, "fail": len(recipients), "error": str(e)}
-        await _log_broadcast_to_dashboard(
-            "broadcast_inventory", "Cập nhật kho", result, extra=extra,
-        )
-        return result
-
-    logger.info(
-        "broadcast_inventory_update recipients=%s sent=%s fail=%s only_in_stock=%s",
-        len(recipients), ok, fail, only_in_stock,
-    )
-    result = {"ok": ok, "fail": fail, "recipients": len(recipients)}
-    await _log_broadcast_to_dashboard(
-        "broadcast_inventory", "Cập nhật kho", result, extra=extra,
-    )
-    return result
 
 
 async def cmd_capnhatkho(update: Update, context: ContextTypes.DEFAULT_TYPE):

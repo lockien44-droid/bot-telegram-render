@@ -59,8 +59,8 @@ export const NOTIFY_META: Record<
     tone: "error",
   },
   delivered: {
-    title: "Đã giao hàng",
-    description: "Đơn đã giao cho khách",
+    title: "Khách mua thành công",
+    description: "Đơn đã thanh toán và giao cho khách",
     tone: "info",
   },
   paid: {
