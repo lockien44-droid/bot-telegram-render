@@ -1722,14 +1722,16 @@ def start_inline_kb() -> InlineKeyboardMarkup:
 
 
 async def setup_bot_commands(application: Application) -> None:
-    """Menu lệnh Telegram — chỉ giữ /start và /support theo yêu cầu."""
+    """Menu lệnh Telegram hiển thị cho mọi user."""
     bot = application.bot
     await bot.delete_my_commands()
     await bot.set_my_commands([
         BotCommand("start", "Menu chính"),
         BotCommand("support", "Hỗ trợ"),
+        BotCommand("2fa", "Lấy mã 2FA"),
+        BotCommand("mail", "Đọc hòm thư"),
     ])
-    logger.info("✅ Đã cập nhật menu lệnh bot (chỉ /start, /support)")
+    logger.info("✅ Đã cập nhật menu lệnh bot (/start, /support, /2fa, /mail)")
 
 
 
@@ -2330,9 +2332,6 @@ async def _deny_non_admin(update: Update) -> None:
 
 
 async def cmd_2fa(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _is_admin_user(update):
-        return await _deny_non_admin(update)
-
     raw = " ".join(context.args).strip()
     if not raw and update.message.reply_to_message:
         raw = (update.message.reply_to_message.text or "").strip()
@@ -2444,9 +2443,6 @@ async def read_mail_again(
 
 
 async def cmd_mail(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _is_admin_user(update):
-        return await _deny_non_admin(update)
-
     raw = " ".join(context.args).strip()
     if not raw and update.message.reply_to_message:
         raw = (update.message.reply_to_message.text or "").strip()
@@ -3798,12 +3794,8 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     menu_text = normalize_menu_text(text)
 
     if looks_like_mail_account(text):
-        if not _is_admin_user(update):
-            return await _deny_non_admin(update)
         return await read_mail_from_text(update, text)
     if looks_like_totp_secret(text):
-        if not _is_admin_user(update):
-            return await _deny_non_admin(update)
         return await send_2fa_from_text(update, context, text)
 
     if text == BTN_PRODUCTS or "sản phẩm" in menu_text or "san pham" in menu_text:
