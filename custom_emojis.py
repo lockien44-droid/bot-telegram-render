@@ -28,11 +28,13 @@ except Exception:  # pragma: no cover
 EMOJI_IDS: dict[str, str] = {
     "chatgpt": "5359726582447487916",
     "ms365": "5370857634440170316",
+    "elevenlabs": "5373310679241466020",
 }
 
 EMOJI_FALLBACKS: dict[str, str] = {
     "chatgpt": (os.getenv("CUSTOM_EMOJI_CHATGPT_FALLBACK", "📱") or "📱").strip(),
     "ms365": (os.getenv("CUSTOM_EMOJI_MS365_FALLBACK", "📱") or "📱").strip(),
+    "elevenlabs": (os.getenv("CUSTOM_EMOJI_ELEVENLABS_FALLBACK", "🌀") or "🌀").strip(),
 }
 
 # Tiền tố trước icon GPT (để trống = chỉ hiện custom emoji, không thêm 🏷️).
@@ -75,12 +77,24 @@ def is_ms365_product_name(name: str) -> bool:
     return "365" in s or "ms365" in s or "office" in s or "microsoft" in s
 
 
+def is_elevenlabs_product_name(name: str) -> bool:
+    s = (name or "").lower().replace(" ", "")
+    return (
+        "elevenlab" in s
+        or "elevenlabs" in s
+        or "elevanlab" in s  # lỗi chính tả hay gặp trên sheet
+        or "elevanlabs" in s
+    )
+
+
 def product_custom_emoji_key(name: str) -> Optional[str]:
     """Khóa registry custom emoji cho sản phẩm (``chatgpt``, ``ms365``, …) hoặc None."""
     if is_gpt_product_name(name) and get_emoji_id("chatgpt"):
         return "chatgpt"
     if is_ms365_product_name(name) and get_emoji_id("ms365"):
         return "ms365"
+    if is_elevenlabs_product_name(name) and get_emoji_id("elevenlabs"):
+        return "elevenlabs"
     return None
 
 
@@ -225,6 +239,7 @@ __all__ = [
     "strip_tg_emoji_html",
     "is_gpt_product_name",
     "is_ms365_product_name",
+    "is_elevenlabs_product_name",
     "product_custom_emoji_key",
     "product_custom_icon_html",
     "product_custom_icon_html_by_key",
