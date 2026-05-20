@@ -49,12 +49,12 @@ from telegram.helpers import escape_markdown
 
 from mail_reader import MailReaderError, read_inbox_messages
 from custom_emojis import (
+    EMOJI_FALLBACKS,
     extract_custom_emoji_ids,
     get_emoji_id,
-    gpt_product_icon_html,
-    is_gpt_product_name,
+    product_custom_emoji_key,
+    product_custom_icon_html,
     strip_tg_emoji_html,
-    tg_emoji,
 )
 
 import httpx
@@ -1681,12 +1681,13 @@ def product_icon(name: str) -> str:
 
 
 def _product_menu_button(p: Dict[str, Any], price_text: str, ready: int) -> InlineKeyboardButton:
-    """Nút sản phẩm; GPT dùng ``icon_custom_emoji_id`` (PTB >= 22.7, chủ bot Premium)."""
+    """Nút sản phẩm; GPT/MS365 dùng ``icon_custom_emoji_id`` (PTB >= 22.7)."""
     pname = p.get("name", "")
     pid = p["product_id"]
     label = f"{p['name']} | {price_text}|SL: {ready}"
     cb = f"pdetail|{pid}"
-    emoji_id = get_emoji_id("chatgpt") if is_gpt_product_name(pname) else ""
+    emoji_key = product_custom_emoji_key(pname)
+    emoji_id = get_emoji_id(emoji_key) if emoji_key else ""
     if emoji_id:
         try:
             return InlineKeyboardButton(
@@ -1698,8 +1699,8 @@ def _product_menu_button(p: Dict[str, Any], price_text: str, ready: int) -> Inli
             logger.warning("icon_custom_emoji_id không hỗ trợ — nâng python-telegram-bot lên 22.7+")
         except Exception as e:
             logger.warning("InlineKeyboardButton icon_custom_emoji_id failed: %s", e)
-    icon = product_icon(pname) if not is_gpt_product_name(pname) else "📱"
-    return InlineKeyboardButton(f"{icon} {p['name']} | {price_text}|SL: {ready}", callback_data=cb)
+    fb = EMOJI_FALLBACKS.get(emoji_key, "📱") if emoji_key else product_icon(pname)
+    return InlineKeyboardButton(f"{fb} {p['name']} | {price_text}|SL: {ready}", callback_data=cb)
 
 
 def build_products_menu_kb(
@@ -1782,9 +1783,9 @@ def product_detail_text(p: Dict[str, Any], ready_qty: int) -> str:
     safe_name = _html.escape(name)
     icon_text = product_icon(name)
 
-    # GPT: icon ChatGPT animated (HTML <tg-emoji>), không emoji 🏷️.
-    if is_gpt_product_name(name) and get_emoji_id("chatgpt"):
-        title_prefix = gpt_product_icon_html()
+    custom_prefix = product_custom_icon_html(name)
+    if custom_prefix:
+        title_prefix = custom_prefix
     else:
         title_prefix = f"{_html.escape(icon_text)} "
 
@@ -1811,7 +1812,8 @@ def product_detail_text_plain(p: Dict[str, Any], ready_qty: int) -> str:
     desc = desc.replace("`", "'")
     name = p.get("name", "")
     safe_name = escape_markdown(name, version=1)
-    prefix = "📱 " if is_gpt_product_name(name) else f"{product_icon(name)} "
+    emoji_key = product_custom_emoji_key(name)
+    prefix = f"{EMOJI_FALLBACKS.get(emoji_key, '📱')} " if emoji_key else f"{product_icon(name)} "
     body = (
         f"{prefix}*{safe_name}*\n\n"
         f"💰 Giá: *{fmt_price(p['price'])}*\n"
@@ -2341,10 +2343,10 @@ async def show_product_detail(update: Update, context: ContextTypes.DEFAULT_TYPE
     kb = product_detail_kb(pid, ready)
     pname = p.get("name") or ""
     chat_id = q.message.chat_id if q.message else q.from_user.id
-    is_gpt = is_gpt_product_name(pname) and get_emoji_id("chatgpt")
+    has_custom_emoji = bool(product_custom_emoji_key(pname))
     text = product_detail_text(p, ready)
 
-    if is_gpt:
+    if has_custom_emoji:
         try:
             await q.message.delete()
         except Exception:

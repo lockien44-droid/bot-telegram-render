@@ -27,10 +27,12 @@ except Exception:  # pragma: no cover
 
 EMOJI_IDS: dict[str, str] = {
     "chatgpt": "5359726582447487916",
+    "ms365": "5370857634440170316",
 }
 
 EMOJI_FALLBACKS: dict[str, str] = {
     "chatgpt": (os.getenv("CUSTOM_EMOJI_CHATGPT_FALLBACK", "📱") or "📱").strip(),
+    "ms365": (os.getenv("CUSTOM_EMOJI_MS365_FALLBACK", "📱") or "📱").strip(),
 }
 
 # Tiền tố trước icon GPT (để trống = chỉ hiện custom emoji, không thêm 🏷️).
@@ -61,12 +63,45 @@ def tg_emoji(name_or_id: str, fallback: Optional[str] = None) -> str:
     return f'<tg-emoji emoji-id="{escape(emoji_id)}">{escape(fb)}</tg-emoji>'
 
 
+def is_gpt_product_name(name: str) -> bool:
+    s = (name or "").lower().replace(" ", "")
+    return "gpt" in s or "chatgpt" in s or "openai" in s
+
+
+def is_ms365_product_name(name: str) -> bool:
+    s = (name or "").lower().replace(" ", "")
+    if is_gpt_product_name(name):
+        return False
+    return "365" in s or "ms365" in s or "office" in s or "microsoft" in s
+
+
+def product_custom_emoji_key(name: str) -> Optional[str]:
+    """Khóa registry custom emoji cho sản phẩm (``chatgpt``, ``ms365``, …) hoặc None."""
+    if is_gpt_product_name(name) and get_emoji_id("chatgpt"):
+        return "chatgpt"
+    if is_ms365_product_name(name) and get_emoji_id("ms365"):
+        return "ms365"
+    return None
+
+
+def product_custom_icon_html_by_key(key: str) -> Optional[str]:
+    if not key or not get_emoji_id(key):
+        return None
+    prefix = GPT_PRODUCT_TAG_PREFIX if key == "chatgpt" else ""
+    return f"{prefix}{tg_emoji(key)} "
+
+
+def product_custom_icon_html(name: str) -> Optional[str]:
+    """HTML prefix custom emoji theo tên sản phẩm."""
+    key = product_custom_emoji_key(name)
+    if not key:
+        return None
+    return product_custom_icon_html_by_key(key)
+
+
 def chatgpt_icon_html() -> str:
-    """Custom emoji ChatGPT (HTML ``<tg-emoji>``), không kèm emoji 🏷️."""
-    if not get_emoji_id("chatgpt"):
-        return "📱 "
-    prefix = GPT_PRODUCT_TAG_PREFIX
-    return f"{prefix}{tg_emoji('chatgpt')} "
+    """Custom emoji ChatGPT (HTML ``<tg-emoji>``)."""
+    return product_custom_icon_html_by_key("chatgpt") or "📱 "
 
 
 def strip_tg_emoji_html(text: str) -> str:
@@ -78,13 +113,12 @@ def strip_tg_emoji_html(text: str) -> str:
     return _TG_EMOJI_RE.sub(_repl, text or "")
 
 
-def is_gpt_product_name(name: str) -> bool:
-    s = (name or "").lower().replace(" ", "")
-    return "gpt" in s or "chatgpt" in s or "openai" in s
-
-
 def gpt_product_icon_html() -> str:
     return chatgpt_icon_html()
+
+
+def ms365_icon_html() -> str:
+    return product_custom_icon_html_by_key("ms365") or "📱 "
 
 
 def utf16_len(text: str) -> int:
@@ -190,7 +224,12 @@ __all__ = [
     "chatgpt_icon_html",
     "strip_tg_emoji_html",
     "is_gpt_product_name",
+    "is_ms365_product_name",
+    "product_custom_emoji_key",
+    "product_custom_icon_html",
+    "product_custom_icon_html_by_key",
     "gpt_product_icon_html",
+    "ms365_icon_html",
     "utf16_len",
     "product_detail_gpt_entities",
     "extract_custom_emoji_ids",
