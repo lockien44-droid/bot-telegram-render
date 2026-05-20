@@ -53,6 +53,7 @@ from custom_emojis import (
     get_emoji_id,
     gpt_product_icon_html,
     is_gpt_product_name,
+    product_detail_gpt_entities,
     tg_emoji,
 )
 
@@ -1693,7 +1694,7 @@ def build_products_menu_kb(
         price_text = fmt_price(p["price"]).replace(" đ", " vnđ")
         pname = p.get("name", "")
         if is_gpt_product_name(pname) and get_emoji_id("chatgpt"):
-            icon = "🏷️🤖"
+            icon = "🏷️📱"
         else:
             icon = product_icon(pname)
         label = f"{icon} {p['name']} | {price_text}|SL: {ready}"
@@ -1763,7 +1764,7 @@ def product_detail_text_plain(p: Dict[str, Any], ready_qty: int) -> str:
     desc = desc.replace("`", "'")
     name = p.get("name", "")
     safe_name = escape_markdown(name, version=1)
-    prefix = "🏷️🤖 " if is_gpt_product_name(name) else f"{product_icon(name)} "
+    prefix = "🏷️📱 " if is_gpt_product_name(name) else f"{product_icon(name)} "
     body = (
         f"{prefix}*{safe_name}*\n\n"
         f"💰 Giá: *{fmt_price(p['price'])}*\n"
@@ -2294,16 +2295,37 @@ async def show_product_detail(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     ready_map = await gs_call(stock_count_ready_by_code_cached)
     ready = ready_map.get(p["stock_code"], 0)
-    text = product_detail_text(p, ready)
     kb = product_detail_kb(pid, ready)
+    pname = p.get("name") or ""
+    chat_id = q.message.chat_id if q.message else q.from_user.id
+    is_gpt = is_gpt_product_name(pname) and get_emoji_id("chatgpt")
 
-    logo = product_logo_path(p.get("name") or "")
+    # GPT: gửi tin mới với MessageEntity (placeholder 📱) — chuẩn như webhook Telegram gửi.
+    if is_gpt:
+        gpt_text, gpt_entities = product_detail_gpt_entities(p, ready, fmt_price=fmt_price)
+        try:
+            await q.message.delete()
+        except Exception:
+            pass
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=gpt_text,
+                entities=gpt_entities,
+                reply_markup=kb,
+            )
+            return
+        except Exception as e:
+            logger.warning("send_message GPT entities failed: %s", e)
+
+    text = product_detail_text(p, ready)
+
+    logo = product_logo_path(pname)
     # GPT + custom emoji: gửi TEXT (icon animated), không gửi ảnh PNG — caption ảnh thường không hiện đúng <tg-emoji>.
-    use_logo_photo = bool(logo) and not (is_gpt_product_name(p.get("name") or "") and get_emoji_id("chatgpt"))
+    use_logo_photo = bool(logo) and not is_gpt
     if use_logo_photo:
         # Sản phẩm có logo riêng -> gửi message dạng PHOTO + caption.
         # Xoá message cũ (danh sách sản phẩm) trước khi gửi mới.
-        chat_id = q.message.chat_id if q.message else q.from_user.id
         try:
             await q.message.delete()
         except Exception:
@@ -2314,7 +2336,7 @@ async def show_product_detail(update: Update, context: ContextTypes.DEFAULT_TYPE
                     chat_id=chat_id,
                     photo=f,
                     caption=text,
-                    parse_mode="HTML",
+                    parse_mode=ParseMode.HTML,
                     reply_markup=kb,
                 )
             return
@@ -2322,7 +2344,6 @@ async def show_product_detail(update: Update, context: ContextTypes.DEFAULT_TYPE
             logger.warning("send_photo product logo failed (%s): %s", logo, e)
             # Fallback xuống gửi text bên dưới
 
-    chat_id = q.message.chat_id if q.message else q.from_user.id
     try:
         await q.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
     except Exception as e1:

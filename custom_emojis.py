@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import os
 from html import escape
-from typing import Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Tuple
 
 try:
     # Optional — only used for type hints / runtime extraction.
@@ -47,9 +47,9 @@ EMOJI_IDS: dict[str, str] = {
     "chatgpt": "5359726582447487916",
 }
 
-# Ký tự fallback bọc trong <tg-emoji> — phải khớp placeholder khi gõ emoji (thường 🤖, length UTF-16 = 2).
+# Ký tự placeholder BẮT BUỘC khớp tin gốc (text "📱", length UTF-16 = 2, id 5359726582447487916).
 EMOJI_FALLBACKS: dict[str, str] = {
-    "chatgpt": (os.getenv("CUSTOM_EMOJI_CHATGPT_FALLBACK", "🤖") or "🤖").strip(),
+    "chatgpt": (os.getenv("CUSTOM_EMOJI_CHATGPT_FALLBACK", "📱") or "📱").strip(),
 }
 
 # Emoji thường hiển thị trước icon ChatGPT (giống tin mẫu: 🏷️ + logo GPT).
@@ -81,7 +81,7 @@ def tg_emoji(name_or_id: str, fallback: str) -> str:
     if not emoji_id:
         fb = (fallback or "").strip() or "•"
         return escape(fb)
-    fb = (fallback or EMOJI_FALLBACKS.get(raw.lower(), "") or "").strip() or "🤖"
+    fb = (fallback or EMOJI_FALLBACKS.get(raw.lower(), "") or "").strip() or "📱"
     return f'<tg-emoji emoji-id="{escape(emoji_id)}">{escape(fb)}</tg-emoji>'
 
 
@@ -93,10 +93,74 @@ def is_gpt_product_name(name: str) -> bool:
 def gpt_product_icon_html() -> str:
     """Tiền tố tiêu đề sản phẩm GPT: 🏷️ + icon ChatGPT (custom emoji)."""
     if not get_emoji_id("chatgpt"):
-        return "🤖 "
+        return "📱 "
     tag = GPT_PRODUCT_TAG_PREFIX
-    gpt = tg_emoji("chatgpt", EMOJI_FALLBACKS.get("chatgpt", "🤖"))
+    gpt = tg_emoji("chatgpt", EMOJI_FALLBACKS.get("chatgpt", "📱"))
     return f"{tag}{gpt} "
+
+
+def utf16_len(text: str) -> int:
+    """Độ dài chuỗi theo UTF-16 (Telegram entity offset/length)."""
+    return len((text or "").encode("utf-16-le")) // 2
+
+
+def product_detail_gpt_entities(
+    p: Dict[str, Any],
+    ready_qty: int,
+    *,
+    fmt_price,
+) -> Tuple[str, List[Any]]:
+    """Tin chi tiết GPT gửi bằng ``entities`` (không parse_mode) — chuẩn Bot API.
+
+    Placeholder custom emoji: ``📱`` (offset 0, length 2) như webhook mẫu.
+    """
+    if MessageEntity is None:
+        return "", []
+
+    name = (p.get("name") or "").strip()
+    desc = (p.get("description") or "").strip() or "Chưa có mô tả."
+    desc = desc.replace("`", "'")
+    status = "✅ Còn hàng" if ready_qty > 0 else "⛔ Hết hàng"
+    price = int(p.get("price") or 0)
+
+    tag = GPT_PRODUCT_TAG_PREFIX
+    ph = EMOJI_FALLBACKS.get("chatgpt", "📱")
+    head = f"{tag}{ph} {name}"
+    text = (
+        f"{head}\n\n"
+        f"💰 Giá: {fmt_price(price)}\n"
+        f"📦 Còn lại: {ready_qty}\n"
+        f"📝 Mô tả:\n{desc}\n"
+        f"📌 Trạng thái: {status}\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "⚡ Thanh toán xong hệ thống giao tự động.\n"
+    )
+    if ready_qty > 0:
+        text += "🛒 Chọn số lượng để mua (bot sẽ tạo QR thanh toán ngay):"
+    else:
+        text += "💬 Sản phẩm tạm hết, vui lòng liên hệ hỗ trợ."
+
+    entities: List[Any] = []
+    emoji_id = get_emoji_id("chatgpt")
+    if emoji_id:
+        entities.append(
+            MessageEntity(
+                type=MessageEntity.CUSTOM_EMOJI,
+                offset=utf16_len(tag),
+                length=utf16_len(ph),
+                custom_emoji_id=emoji_id,
+            )
+        )
+    name_off = utf16_len(tag) + utf16_len(ph) + utf16_len(" ")
+    if name:
+        entities.append(
+            MessageEntity(
+                type=MessageEntity.BOLD,
+                offset=name_off,
+                length=utf16_len(name),
+            )
+        )
+    return text, entities
 
 
 def extract_custom_emoji_ids(message: "Message") -> List[Tuple[str, str]]:
@@ -146,5 +210,7 @@ __all__ = [
     "tg_emoji",
     "is_gpt_product_name",
     "gpt_product_icon_html",
+    "utf16_len",
+    "product_detail_gpt_entities",
     "extract_custom_emoji_ids",
 ]
