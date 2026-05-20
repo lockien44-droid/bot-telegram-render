@@ -42,10 +42,8 @@ except Exception:  # pragma: no cover — keep module importable without PTB
 # Fill these in by running /emojiid on a message that contains the emoji.
 # ---------------------------------------------------------------------------
 EMOJI_IDS: dict[str, str] = {
-    # Example (paste the real ID once you've grabbed it via /emojiid):
-    # "chatgpt":   "5368324170671202286",
-    # "telegram":  "5368324170671202286",
-    "chatgpt": "",
+    # Icon ChatGPT từ pack @ADROITPACKE (custom_emoji_id từ /emojiid)
+    "chatgpt": "5359726582447487916",
 }
 
 
