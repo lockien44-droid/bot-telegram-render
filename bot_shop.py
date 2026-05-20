@@ -123,6 +123,13 @@ _BROADCAST_LOCK = asyncio.Lock()
 _LAST_BROADCAST_AT: Dict[str, float] = {}
 _START_NOTIFY_LAST_TELEGRAM = 0.0
 _START_NOTIFY_PENDING_COUNT = 0
+_HANGVE_RUNNING_ADMINS: set[int] = set()
+
+# Chống Telegram webhook retry cùng update_id (gây /hangve chạy 2–10 lần).
+_TELEGRAM_UPDATE_DEDUP: OrderedDict[int, float] = OrderedDict()
+_TELEGRAM_UPDATE_DEDUP_LOCK = asyncio.Lock()
+_TELEGRAM_UPDATE_DEDUP_TTL = max(3600, int(os.getenv("TELEGRAM_UPDATE_DEDUP_TTL", "86400")))
+_TELEGRAM_UPDATE_DEDUP_MAX = 8000
 
 ORDER_TTL_SECONDS = int(os.getenv("ORDER_TTL_SECONDS", "300"))  # 5 phút
 # Đơn hiển thị cho khách: giao thành công + đang chờ thanh toán (PAID/PENDING)
@@ -336,6 +343,27 @@ def _broadcast_cooldown_block(kind: str) -> Optional[str]:
 
 def _mark_broadcast_sent(kind: str) -> None:
     _LAST_BROADCAST_AT[kind] = time.time()
+
+
+async def claim_telegram_update(update_id: Optional[int]) -> bool:
+    """True = lần đầu xử lý update này; False = trùng (webhook retry)."""
+    if update_id is None:
+        return True
+    now = time.time()
+    async with _TELEGRAM_UPDATE_DEDUP_LOCK:
+        ts = _TELEGRAM_UPDATE_DEDUP.get(update_id)
+        if ts is not None and (now - ts) < _TELEGRAM_UPDATE_DEDUP_TTL:
+            return False
+        _TELEGRAM_UPDATE_DEDUP[update_id] = now
+        while len(_TELEGRAM_UPDATE_DEDUP) > _TELEGRAM_UPDATE_DEDUP_MAX:
+            _TELEGRAM_UPDATE_DEDUP.popitem(last=False)
+        expired = [
+            uid for uid, t in _TELEGRAM_UPDATE_DEDUP.items()
+            if (now - t) >= _TELEGRAM_UPDATE_DEDUP_TTL
+        ]
+        for uid in expired:
+            _TELEGRAM_UPDATE_DEDUP.pop(uid, None)
+    return True
 
 
 async def _collect_broadcast_recipients(*, include_admins: bool = False) -> List[int]:
@@ -3795,8 +3823,18 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ================== CALLBACK ROUTER ==================
 # ✅ Sửa lại cmd_hangve (copy đè lên hàm cũ)
 async def cmd_hangve(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
+    admin_id = update.effective_user.id
+    if admin_id not in ADMIN_IDS:
         return
+
+    if update.update_id is not None and not await claim_telegram_update(update.update_id):
+        logger.info("cmd_hangve: skip duplicate update_id=%s", update.update_id)
+        return
+
+    if admin_id in _HANGVE_RUNNING_ADMINS:
+        return await update.message.reply_text(
+            "⏳ Đang gửi broadcast trước đó, vui lòng đợi hoàn tất."
+        )
 
     args = list(context.args or [])
     if not args or args[0].lower() != "confirm":
@@ -3826,9 +3864,17 @@ async def cmd_hangve(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if blocked:
             return await update.message.reply_text(blocked)
 
+        if admin_id in _HANGVE_RUNNING_ADMINS:
+            return await update.message.reply_text(
+                "⏳ Đang gửi broadcast trước đó, vui lòng đợi hoàn tất."
+            )
+
         user_ids = await _collect_broadcast_recipients(include_admins=False)
         if not user_ids:
             return await update.message.reply_text("❌ Không có khách nào trong sheet USERS.")
+
+        _HANGVE_RUNNING_ADMINS.add(admin_id)
+        _mark_broadcast_sent("hangve")
 
         progress = await update.message.reply_text(
             f"📣 Đang gửi tới *{len(user_ids)}* khách…",
@@ -3836,21 +3882,23 @@ async def cmd_hangve(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         ok = fail = 0
-        for cid in user_ids:
-            try:
-                await context.bot.send_message(
-                    chat_id=cid,
-                    text=text,
-                    parse_mode="Markdown",
-                    disable_web_page_preview=True,
-                )
-                ok += 1
-                await asyncio.sleep(0.05)
-            except Exception as e:
-                fail += 1
-                logger.warning("send hangve fail chat_id=%s err=%s", cid, e)
+        try:
+            for cid in user_ids:
+                try:
+                    await context.bot.send_message(
+                        chat_id=cid,
+                        text=text,
+                        parse_mode="Markdown",
+                        disable_web_page_preview=True,
+                    )
+                    ok += 1
+                    await asyncio.sleep(0.05)
+                except Exception as e:
+                    fail += 1
+                    logger.warning("send hangve fail chat_id=%s err=%s", cid, e)
+        finally:
+            _HANGVE_RUNNING_ADMINS.discard(admin_id)
 
-        _mark_broadcast_sent("hangve")
         try:
             await progress.edit_text(f"✅ Đã gửi: *{ok}* | Lỗi: *{fail}* | Tổng: *{len(user_ids)}* khách")
         except Exception:
@@ -4151,6 +4199,10 @@ async def cmd_capnhatkho(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     if not _is_admin_user(update):
         return await _deny_non_admin(update)
+
+    if update.update_id is not None and not await claim_telegram_update(update.update_id):
+        logger.info("cmd_capnhatkho: skip duplicate update_id=%s", update.update_id)
+        return
 
     arg = ""
     if context.args:

@@ -15,7 +15,7 @@ from telegram import Update
 
 from admin_dashboard import register_admin_routes
 from shop_api import register_shop_api_routes
-from bot_shop import build_application, setup_bot_commands
+from bot_shop import build_application, claim_telegram_update, setup_bot_commands
 from sepay_webhook import expire_scan_once, process_payment, set_telegram_bot, verify_sepay_auth
 
 logging.basicConfig(level=logging.INFO)
@@ -100,6 +100,16 @@ async def jobs_expire(request: Request):
     return await expire_scan_once()
 
 
+def _telegram_update_is_slow_broadcast(payload: dict) -> bool:
+    """Lệnh gửi hàng loạt — xử lý nền để webhook trả 200 ngay, tránh Telegram retry."""
+    msg = payload.get("message") or payload.get("edited_message") or {}
+    text = (msg.get("text") or "").strip()
+    if not text.startswith("/"):
+        return False
+    cmd = text.split(maxsplit=1)[0].split("@", 1)[0].lower()
+    return cmd in ("/hangve", "/capnhatkho")
+
+
 @app.post(telegram_webhook_path())
 async def telegram_webhook(request: Request):
     if telegram_app is None:
@@ -112,7 +122,24 @@ async def telegram_webhook(request: Request):
             raise HTTPException(status_code=401, detail="Bad secret token")
 
     payload = await request.json()
+    update_id = payload.get("update_id")
     update = Update.de_json(payload, telegram_app.bot)
+
+    if _telegram_update_is_slow_broadcast(payload):
+
+        async def _process_broadcast_update() -> None:
+            try:
+                await telegram_app.process_update(update)
+            except Exception:
+                logger.exception("process_update (broadcast) failed update_id=%s", update_id)
+
+        _track_task(asyncio.create_task(_process_broadcast_update()))
+        return {"ok": True, "queued": True}
+
+    if update_id is not None and not await claim_telegram_update(int(update_id)):
+        logger.info("telegram_webhook: skip duplicate update_id=%s", update_id)
+        return {"ok": True, "duplicate": True}
+
     await telegram_app.process_update(update)
     return {"ok": True}
 
