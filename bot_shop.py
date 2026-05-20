@@ -1843,6 +1843,24 @@ async def _edit_html_message(message, text: str, **kwargs):
         raise
 
 
+def _format_product_description_html(raw: str) -> str:
+    """Mô tả nhiều dòng — thêm khoảng trống / blockquote cho dễ đọc."""
+    text = (raw or "").strip().replace("`", "'")
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        lines = ["Chưa có mô tả."]
+    inner = "\n\n".join(_html.escape(ln) for ln in lines)
+    return f"<blockquote>{inner}</blockquote>"
+
+
+def _format_product_description_plain(raw: str) -> str:
+    text = (raw or "").strip().replace("`", "'")
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return "Chưa có mô tả."
+    return "\n\n".join(lines)
+
+
 def product_detail_text(p: Dict[str, Any], ready_qty: int) -> str:
     """Trả về caption/text cho màn chi tiết sản phẩm dưới dạng HTML.
 
@@ -1850,11 +1868,7 @@ def product_detail_text(p: Dict[str, Any], ready_qty: int) -> str:
     custom emoji (premium) chỉ render được khi dùng <tg-emoji> trong HTML.
     """
     status = "✅ <b>Còn hàng</b>" if ready_qty > 0 else "⛔ <b>Hết hàng</b>"
-
-    desc = (p.get("description") or "").strip()
-    if not desc:
-        desc = "Chưa có mô tả."
-    desc = _html.escape(desc.replace("`", "'"))
+    desc_block = _format_product_description_html(p.get("description") or "")
 
     name = p.get("name", "")
     safe_name = _html.escape(name)
@@ -1869,9 +1883,9 @@ def product_detail_text(p: Dict[str, Any], ready_qty: int) -> str:
     body = (
         f"{title_prefix}<b>{safe_name}</b>\n\n"
         f"💰 Giá: <b>{_html.escape(fmt_price(p['price']))}</b>\n"
-        f"📦 Còn lại: <b>{ready_qty}</b>\n"
-        f"📝 <b>Mô tả:</b>\n{desc}\n"
-        f"📌 Trạng thái: {status}\n"
+        f"📦 Còn lại: <b>{ready_qty}</b>\n\n"
+        f"📝 <b>Mô tả</b>\n{desc_block}\n\n"
+        f"📌 Trạng thái: {status}\n\n"
         "━━━━━━━━━━━━━━━━━━\n\n"
         "⚡ Thanh toán xong hệ thống <b>giao tự động</b>.\n"
     )
@@ -1885,8 +1899,7 @@ def product_detail_text(p: Dict[str, Any], ready_qty: int) -> str:
 def product_detail_text_plain(p: Dict[str, Any], ready_qty: int) -> str:
     """Fallback Markdown khi không gửi được custom emoji (vd: chủ bot chưa Premium)."""
     status = "✅ *Còn hàng*" if ready_qty > 0 else "⛔ *Hết hàng*"
-    desc = (p.get("description") or "").strip() or "Chưa có mô tả."
-    desc = desc.replace("`", "'")
+    desc = _format_product_description_plain(p.get("description") or "")
     name = p.get("name", "")
     safe_name = escape_markdown(name, version=1)
     emoji_key = product_custom_emoji_key(name)
@@ -1894,9 +1907,9 @@ def product_detail_text_plain(p: Dict[str, Any], ready_qty: int) -> str:
     body = (
         f"{prefix}*{safe_name}*\n\n"
         f"💰 Giá: *{fmt_price(p['price'])}*\n"
-        f"📦 Còn lại: *{ready_qty}*\n"
-        f"📝 *Mô tả:*\n{desc}\n"
-        f"📌 Trạng thái: {status}\n"
+        f"📦 Còn lại: *{ready_qty}*\n\n"
+        f"📝 *Mô tả*\n{desc}\n\n"
+        f"📌 Trạng thái: {status}\n\n"
         "━━━━━━━━━━━━━━━━━━\n\n"
         "⚡ Thanh toán xong hệ thống *giao tự động*.\n"
     )
@@ -2451,26 +2464,15 @@ async def show_product_detail(update: Update, context: ContextTypes.DEFAULT_TYPE
     kb = product_detail_kb(pid, ready)
     pname = p.get("name") or ""
     chat_id = q.message.chat_id if q.message else q.from_user.id
-    has_custom_emoji = bool(product_custom_emoji_key(pname))
     text = product_detail_text(p, ready)
-
-    if has_custom_emoji:
-        try:
-            await q.message.delete()
-        except Exception:
-            pass
-        await _send_html_message(context.bot, chat_id, text, reply_markup=kb)
-        return
-
     logo = product_logo_path(pname)
-    use_logo_photo = bool(logo)
-    if use_logo_photo:
-        # Sản phẩm có logo riêng -> gửi message dạng PHOTO + caption.
-        # Xoá message cũ (danh sách sản phẩm) trước khi gửi mới.
-        try:
-            await q.message.delete()
-        except Exception:
-            pass
+
+    try:
+        await q.message.delete()
+    except Exception:
+        pass
+
+    if logo:
         try:
             with open(logo, "rb") as f:
                 await context.bot.send_photo(
@@ -2482,18 +2484,24 @@ async def show_product_detail(update: Update, context: ContextTypes.DEFAULT_TYPE
                 )
             return
         except Exception as e:
+            err = str(e).lower()
+            if "emoji" in err or "parse" in err or "custom" in err:
+                try:
+                    plain = strip_tg_emoji_html(text)
+                    with open(logo, "rb") as f:
+                        await context.bot.send_photo(
+                            chat_id=chat_id,
+                            photo=f,
+                            caption=plain,
+                            parse_mode=ParseMode.HTML,
+                            reply_markup=kb,
+                        )
+                    return
+                except Exception as e2:
+                    logger.warning("send_photo product logo plain caption failed: %s", e2)
             logger.warning("send_photo product logo failed (%s): %s", logo, e)
-            # Fallback xuống gửi text bên dưới
 
-    try:
-        await _edit_html_message(q.message, text, reply_markup=kb)
-    except Exception as e1:
-        logger.warning("edit_message_text product detail failed: %s", e1)
-        try:
-            await q.message.delete()
-        except Exception:
-            pass
-        await _send_html_message(context.bot, chat_id, text, reply_markup=kb)
+    await _send_html_message(context.bot, chat_id, text, reply_markup=kb)
 
 async def ask_qty(update: Update, context: ContextTypes.DEFAULT_TYPE, pid: str):
     q = update.callback_query
