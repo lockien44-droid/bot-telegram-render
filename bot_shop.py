@@ -3820,6 +3820,101 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Bấm menu để sử dụng nhé.", reply_markup=main_menu_keyboard())
 
 
+def user_broadcast_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🛍️ Xem sản phẩm", callback_data="go_products")],
+    ])
+
+
+async def broadcast_user_message(
+    message: str,
+    *,
+    cooldown_kind: str = "user_message",
+    parse_mode: str = "Markdown",
+    add_shop_button: bool = True,
+) -> Dict[str, Any]:
+    """Gửi tin nhắn tùy chỉnh tới mọi user đã /start (dashboard hoặc /hangve)."""
+    text = (message or "").strip()
+    if not text:
+        return {"ok": 0, "fail": 0, "skipped": True, "reason": "empty_message"}
+    if len(text) > 4096:
+        return {"ok": 0, "fail": 0, "skipped": True, "reason": "message_too_long"}
+
+    token = (BOT_TOKEN or "").strip()
+    if not token or token == "PUT_YOUR_BOT_TOKEN_HERE":
+        result = {"ok": 0, "fail": 0, "skipped": True, "reason": "no_bot_token"}
+        await _log_broadcast_to_dashboard("broadcast_message", "Thông báo khách", result)
+        return result
+
+    blocked = _broadcast_cooldown_block(cooldown_kind)
+    if blocked:
+        result = {"ok": 0, "fail": 0, "skipped": True, "reason": "cooldown", "detail": blocked}
+        await _log_broadcast_to_dashboard("broadcast_message", "Thông báo khách", result, extra=blocked)
+        return result
+
+    if _BROADCAST_LOCK.locked():
+        result = {"ok": 0, "fail": 0, "skipped": True, "reason": "broadcast_busy"}
+        await _log_broadcast_to_dashboard("broadcast_message", "Thông báo khách", result)
+        return result
+
+    pm = ParseMode.HTML if (parse_mode or "").strip().lower() == "html" else ParseMode.MARKDOWN
+    kb = user_broadcast_keyboard() if add_shop_button else None
+    preview = text[:120].replace("\n", " ")
+
+    async with _BROADCAST_LOCK:
+        blocked = _broadcast_cooldown_block(cooldown_kind)
+        if blocked:
+            result = {"ok": 0, "fail": 0, "skipped": True, "reason": "cooldown", "detail": blocked}
+            await _log_broadcast_to_dashboard(
+                "broadcast_message", "Thông báo khách", result, extra=blocked,
+            )
+            return result
+
+        recipients = await _collect_broadcast_recipients(include_admins=False)
+        if not recipients:
+            result = {"ok": 0, "fail": 0, "skipped": True, "reason": "no_recipients"}
+            await _log_broadcast_to_dashboard(
+                "broadcast_message", "Thông báo khách", result, extra=preview,
+            )
+            return result
+
+        _mark_broadcast_sent(cooldown_kind)
+        ok = fail = 0
+        try:
+            async with Bot(token) as bot:
+                for cid in recipients:
+                    try:
+                        await bot.send_message(
+                            chat_id=cid,
+                            text=text,
+                            parse_mode=pm,
+                            reply_markup=kb,
+                            disable_web_page_preview=True,
+                        )
+                        ok += 1
+                        await asyncio.sleep(0.05)
+                    except Exception as e:
+                        fail += 1
+                        logger.warning("broadcast_user_message fail chat_id=%s err=%s", cid, e)
+        except Exception as e:
+            logger.exception("broadcast_user_message bot session failed: %s", e)
+            result = {"ok": 0, "fail": len(recipients), "error": str(e)}
+            await _log_broadcast_to_dashboard(
+                "broadcast_message", "Thông báo khách", result, extra=preview,
+            )
+            return result
+
+        logger.info(
+            "broadcast_user_message recipients=%s sent=%s fail=%s",
+            len(recipients), ok, fail,
+        )
+        result = {"ok": ok, "fail": fail, "recipients": len(recipients)}
+        await _log_broadcast_to_dashboard(
+            "broadcast_message", "Thông báo khách", result, extra=preview,
+        )
+        return result
+
+
 # ================== CALLBACK ROUTER ==================
 # ✅ Sửa lại cmd_hangve (copy đè lên hàm cũ)
 async def cmd_hangve(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3852,57 +3947,42 @@ async def cmd_hangve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not text:
         text = "✅ *HÀNG ĐÃ VỀ*\n\n🔥 Sản phẩm đã có hàng lại!\n👉 Vào /shop để mua nhé."
 
-    blocked = _broadcast_cooldown_block("hangve")
-    if blocked:
-        return await update.message.reply_text(blocked)
-
-    if _BROADCAST_LOCK.locked():
-        return await update.message.reply_text("⏳ Đang gửi broadcast khác, vui lòng đợi xong.")
-
-    async with _BROADCAST_LOCK:
-        blocked = _broadcast_cooldown_block("hangve")
-        if blocked:
-            return await update.message.reply_text(blocked)
-
-        if admin_id in _HANGVE_RUNNING_ADMINS:
-            return await update.message.reply_text(
-                "⏳ Đang gửi broadcast trước đó, vui lòng đợi hoàn tất."
-            )
-
-        user_ids = await _collect_broadcast_recipients(include_admins=False)
-        if not user_ids:
-            return await update.message.reply_text("❌ Không có khách nào trong sheet USERS.")
-
-        _HANGVE_RUNNING_ADMINS.add(admin_id)
-        _mark_broadcast_sent("hangve")
-
-        progress = await update.message.reply_text(
-            f"📣 Đang gửi tới *{len(user_ids)}* khách…",
-            parse_mode="Markdown",
+    if _BROADCAST_LOCK.locked() or admin_id in _HANGVE_RUNNING_ADMINS:
+        return await update.message.reply_text(
+            "⏳ Đang gửi broadcast khác, vui lòng đợi hoàn tất."
         )
 
-        ok = fail = 0
-        try:
-            for cid in user_ids:
-                try:
-                    await context.bot.send_message(
-                        chat_id=cid,
-                        text=text,
-                        parse_mode="Markdown",
-                        disable_web_page_preview=True,
-                    )
-                    ok += 1
-                    await asyncio.sleep(0.05)
-                except Exception as e:
-                    fail += 1
-                    logger.warning("send hangve fail chat_id=%s err=%s", cid, e)
-        finally:
-            _HANGVE_RUNNING_ADMINS.discard(admin_id)
+    progress = await update.message.reply_text("📣 Đang gửi broadcast…", parse_mode="Markdown")
+    _HANGVE_RUNNING_ADMINS.add(admin_id)
+    try:
+        result = await broadcast_user_message(
+            text,
+            cooldown_kind="hangve",
+            parse_mode="Markdown",
+            add_shop_button=True,
+        )
+    finally:
+        _HANGVE_RUNNING_ADMINS.discard(admin_id)
 
+    if result.get("skipped"):
+        reason = result.get("reason") or "skipped"
+        detail = result.get("detail") or reason
+        body = f"❌ Không gửi được ({reason}).\n{detail}"
+        if reason == "no_recipients":
+            body = "❌ Không có khách nào trong sheet USERS."
         try:
-            await progress.edit_text(f"✅ Đã gửi: *{ok}* | Lỗi: *{fail}* | Tổng: *{len(user_ids)}* khách")
+            await progress.edit_text(body)
         except Exception:
-            await update.message.reply_text(f"Đã gửi: {ok} | Lỗi: {fail}")
+            await update.message.reply_text(body)
+        return
+
+    ok = int(result.get("ok") or 0)
+    fail = int(result.get("fail") or 0)
+    total = int(result.get("recipients") or 0)
+    try:
+        await progress.edit_text(f"✅ Đã gửi: *{ok}* | Lỗi: *{fail}* | Tổng: *{total}* khách")
+    except Exception:
+        await update.message.reply_text(f"Đã gửi: {ok} | Lỗi: {fail}")
 
 
 def stock_update_text(product_name: str, price: int, added: int, total_ready: int) -> str:

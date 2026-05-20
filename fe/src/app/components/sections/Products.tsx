@@ -16,7 +16,9 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "../ui/alert-dialog";
-import { Plus, Pencil, Package, Trash2, Megaphone } from "lucide-react";
+import { Plus, Pencil, Package, Trash2, Megaphone, Send } from "lucide-react";
+import { Textarea } from "../ui/textarea";
+import { Checkbox } from "../ui/checkbox";
 import { toast } from "sonner";
 import { adminApi, money, text, type AdminSnapshot, type AnyRow } from "../../api";
 
@@ -37,6 +39,54 @@ export function Products({ data, adminKey, refresh, embedded, onAddStock }: Prop
   const [deleteTarget, setDeleteTarget] = useState<AnyRow | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [broadcasting, setBroadcasting] = useState(false);
+  const [notifyOpen, setNotifyOpen] = useState(false);
+  const [notifyText, setNotifyText] = useState("");
+  const [notifySending, setNotifySending] = useState(false);
+  const [notifyAddShopBtn, setNotifyAddShopBtn] = useState(true);
+  const [notifyConfirmOpen, setNotifyConfirmOpen] = useState(false);
+
+  type BroadcastResult = {
+    ok?: number;
+    fail?: number;
+    recipients?: number;
+    skipped?: boolean;
+    reason?: string;
+    detail?: string;
+  };
+
+  const sendUserNotify = async () => {
+    const message = notifyText.trim();
+    if (!message) {
+      toast.error("Nhập nội dung thông báo");
+      return;
+    }
+    setNotifySending(true);
+    try {
+      const result = await adminApi<BroadcastResult>("/admin/api/users/broadcast", adminKey, {
+        method: "POST",
+        body: JSON.stringify({
+          message,
+          parse_mode: "Markdown",
+          add_shop_button: notifyAddShopBtn,
+        }),
+      });
+      if (result.skipped) {
+        const msg = result.detail || result.reason || "Không gửi được";
+        toast.warning(msg);
+      } else {
+        toast.success(
+          `Đã gửi tới ${result.ok ?? 0}/${result.recipients ?? 0} khách${(result.fail ?? 0) ? ` (${result.fail} lỗi)` : ""}`,
+        );
+        setNotifyOpen(false);
+        setNotifyText("");
+        setNotifyConfirmOpen(false);
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Gửi thông báo thất bại");
+    } finally {
+      setNotifySending(false);
+    }
+  };
 
   const broadcastInventory = async () => {
     if (
@@ -48,13 +98,7 @@ export function Products({ data, adminKey, refresh, embedded, onAddStock }: Prop
     }
     setBroadcasting(true);
     try {
-      const result = await adminApi<{
-        ok?: number;
-        fail?: number;
-        recipients?: number;
-        skipped?: boolean;
-        reason?: string;
-      }>("/admin/api/inventory/broadcast", adminKey, {
+      const result = await adminApi<BroadcastResult>("/admin/api/inventory/broadcast", adminKey, {
         method: "POST",
         body: JSON.stringify({ only_in_stock: true }),
       });
@@ -138,9 +182,19 @@ export function Products({ data, adminKey, refresh, embedded, onAddStock }: Prop
             size="sm"
             variant="outline"
             className="gap-1.5"
+            onClick={() => setNotifyOpen(true)}
+            disabled={broadcasting || notifySending}
+            title="Gửi tin nhắn tùy chỉnh tới khách đã /start bot"
+          >
+            <Send size={15} /> Thông báo khách
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="gap-1.5"
             onClick={broadcastInventory}
-            disabled={broadcasting}
-            title="Thông báo danh sách sản phẩm còn hàng tới tất cả khách đã /start"
+            disabled={broadcasting || notifySending}
+            title="Gửi danh sách sản phẩm còn hàng tới tất cả khách đã /start"
           >
             <Megaphone size={15} /> {broadcasting ? "Đang gửi..." : "Cập nhật kho cho khách"}
           </Button>
@@ -221,6 +275,77 @@ export function Products({ data, adminKey, refresh, embedded, onAddStock }: Prop
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={notifyOpen} onOpenChange={setNotifyOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Thông báo cho khách dùng bot</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-1">
+            <p className="text-sm text-muted-foreground">
+              Gửi tới mọi user đã từng <strong>/start</strong> bot (sheet USERS). Hỗ trợ Markdown (*in đậm*, _nghiêng_).
+              Mỗi lần gửi cách nhau tối thiểu vài phút (chống spam).
+            </p>
+            <div className="space-y-1">
+              <Label htmlFor="notify-message">Nội dung tin nhắn</Label>
+              <Textarea
+                id="notify-message"
+                value={notifyText}
+                onChange={(e) => setNotifyText(e.target.value)}
+                placeholder="VD: Hàng GPT Trial đã về — mọi người /start để mua nhé!"
+                className="min-h-[140px]"
+                maxLength={4096}
+              />
+              <p className="text-xs text-muted-foreground text-right">{notifyText.length}/4096</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="notify-shop-btn"
+                checked={notifyAddShopBtn}
+                onCheckedChange={(v) => setNotifyAddShopBtn(Boolean(v))}
+              />
+              <label htmlFor="notify-shop-btn" className="text-sm cursor-pointer select-none">
+                Thêm nút &quot;Xem sản phẩm&quot; dưới tin nhắn
+              </label>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setNotifyOpen(false)} disabled={notifySending}>
+              Huỷ
+            </Button>
+            <Button
+              className="gap-1.5"
+              disabled={notifySending || !notifyText.trim()}
+              onClick={() => setNotifyConfirmOpen(true)}
+            >
+              <Send size={15} /> Gửi thông báo
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog open={notifyConfirmOpen} onOpenChange={setNotifyConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Gửi thông báo cho toàn bộ khách?</AlertDialogTitle>
+            <AlertDialogDescription className="whitespace-pre-wrap text-left max-h-48 overflow-y-auto">
+              {notifyText.trim() || "(trống)"}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={notifySending}>Huỷ</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={notifySending}
+              onClick={(e) => {
+                e.preventDefault();
+                void sendUserNotify();
+              }}
+            >
+              {notifySending ? "Đang gửi..." : "Xác nhận gửi"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog open={Boolean(deleteTarget)} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <AlertDialogContent>

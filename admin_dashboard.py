@@ -520,6 +520,26 @@ def register_admin_routes(app: FastAPI) -> None:
         from bot_shop import broadcast_inventory_update
         return await broadcast_inventory_update(only_in_stock=only_in_stock)
 
+    @app.post("/admin/api/users/broadcast")
+    async def admin_broadcast_users(request: Request):
+        """Gửi tin nhắn tùy chỉnh tới mọi user đã /start bot (từ dashboard)."""
+        require_admin(request)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        message = (body.get("message") or body.get("text") or "").strip()
+        parse_mode = (body.get("parse_mode") or "Markdown").strip()
+        add_shop_button = bool(body.get("add_shop_button", True))
+        from bot_shop import broadcast_user_message
+
+        return await broadcast_user_message(
+            message,
+            cooldown_kind="user_message",
+            parse_mode=parse_mode,
+            add_shop_button=add_shop_button,
+        )
+
     @app.post("/admin/api/products")
     async def admin_save_product(request: Request):
         require_admin(request)
