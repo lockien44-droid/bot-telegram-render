@@ -915,13 +915,37 @@ def append_dashboard_notification_simple_sync(event: str, title: str, message: s
         logger.warning("append_row notifications (simple) thất bại (event=%s): %s", event, e)
 
 
+def _normalize_notif_row(row: Dict[str, str]) -> Dict[str, str]:
+    """Chuẩn hoá key cột (sheet có thể khác hoa/thường hoặc khoảng trắng)."""
+    return {
+        str(k).strip().lower().replace(" ", "_"): (v or "").strip()
+        for k, v in row.items()
+    }
+
+
+def _notification_created_ts(row: Dict[str, str]) -> float:
+    """Timestamp để sắp xếp — mới nhất lên trước."""
+    created = row.get("created_at", "")
+    dt = parse_dt(created)
+    if dt:
+        return dt.timestamp()
+    nid = (row.get("id") or "").strip()
+    m = re.match(r"^N(\d{14})", nid)
+    if m:
+        try:
+            return datetime.strptime(m.group(1), "%Y%m%d%H%M%S").replace(tzinfo=TZ).timestamp()
+        except Exception:
+            pass
+    return 0.0
+
+
 def list_dashboard_notifications_sync(limit: int = 200) -> List[Dict[str, str]]:
     init_sheets()
     _ensure_notifications_worksheet()
     if not _ws_notif:
         return []
-    rows = get_all_records(_ws_notif)
-    rows.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+    rows = [_normalize_notif_row(r) for r in get_all_records(_ws_notif)]
+    rows.sort(key=_notification_created_ts, reverse=True)
     return rows[: max(1, min(int(limit or 200), 500))]
 
 

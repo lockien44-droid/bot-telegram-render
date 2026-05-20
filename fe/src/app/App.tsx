@@ -18,6 +18,7 @@ import {
   NOTIFY_META,
   type OrderNotification,
   type SheetNotificationRow,
+  sortNotificationsNewestFirst,
 } from "./notifications";
 
 const POLL_MS = 15_000;
@@ -70,7 +71,7 @@ export default function App() {
       try {
         const res = await adminApi<{ items: SheetNotificationRow[] }>(`/admin/api/notifications?limit=300`, key);
         const rows = Array.isArray(res.items) ? res.items : [];
-        const mapped = rows.map(mapSheetNotification);
+        const mapped = sortNotificationsNewestFirst(rows.map(mapSheetNotification));
         const prev = prevNotifIdsRef.current;
         if (notifHydratedRef.current) {
           for (const n of mapped) {

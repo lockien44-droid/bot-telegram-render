@@ -149,11 +149,30 @@ export function mapSheetNotification(row: SheetNotificationRow): OrderNotificati
   };
 }
 
+/** Parse thời gian thông báo (ISO hoặc id dạng NYYYYMMDDHHMMSS…). */
+export function notificationTimeMs(n: OrderNotification): number {
+  const fromAt = Date.parse(n.at);
+  if (!Number.isNaN(fromAt)) return fromAt;
+  const m = /^N(\d{14})/.exec(n.id);
+  if (m) {
+    const s = m[1];
+    const iso = `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}T${s.slice(8, 10)}:${s.slice(10, 12)}:${s.slice(12, 14)}`;
+    const t = Date.parse(iso);
+    if (!Number.isNaN(t)) return t;
+  }
+  return 0;
+}
+
+/** Mới nhất ở đầu danh sách (dashboard + overview). */
+export function sortNotificationsNewestFirst(items: OrderNotification[]): OrderNotification[] {
+  return [...items].sort((a, b) => notificationTimeMs(b) - notificationTimeMs(a));
+}
+
 export function mergeNotifications(
   prev: OrderNotification[],
   batch: OrderNotification[],
 ): OrderNotification[] {
   const seen = new Set(prev.map((n) => n.id));
   const added = batch.filter((n) => !seen.has(n.id));
-  return [...added, ...prev].slice(0, MAX_NOTIFICATIONS);
+  return sortNotificationsNewestFirst([...added, ...prev]).slice(0, MAX_NOTIFICATIONS);
 }
