@@ -30,6 +30,7 @@ load_dotenv(os.path.join(BASE_DIR, ".env"), override=True)
 from telegram import (
     Bot,
     BotCommand,
+    CopyTextButton,
     Update,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
@@ -1757,7 +1758,22 @@ def support_kb() -> InlineKeyboardMarkup:
     ])
 
 
-def quick_actions_kb(repeat_token: Optional[str] = None) -> InlineKeyboardMarkup:
+def _copy_code_button(code: str, label: str = "📋 Copy mã") -> Optional[InlineKeyboardButton]:
+    """Nút copy clipboard (Telegram API — tối đa 256 ký tự)."""
+    raw = (code or "").strip()
+    if not raw or len(raw) > 256:
+        return None
+    try:
+        return InlineKeyboardButton(label, copy_text=CopyTextButton(raw))
+    except Exception as e:
+        logger.warning("copy_text button failed: %s", e)
+        return None
+
+
+def quick_actions_kb(
+    repeat_token: Optional[str] = None,
+    copy_code: Optional[str] = None,
+) -> InlineKeyboardMarkup:
     """Inline keyboard chuẩn cho các tin nhanh.
 
     Nếu ``repeat_token`` được truyền, nút "🔄 Đọc lại" sẽ gắn token đó vào
@@ -1765,18 +1781,15 @@ def quick_actions_kb(repeat_token: Optional[str] = None) -> InlineKeyboardMarkup
     input nào cần đọc lại (chống bug "đọc nhầm sang input mới nhất").
     """
     repeat_cb = f"mail_repeat|{repeat_token}" if repeat_token else "mail_repeat"
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("🛍 Sản phẩm", callback_data="go_products"),
-            InlineKeyboardButton("📦 Đơn hàng", callback_data="go_orders"),
-        ],
-        [
-            InlineKeyboardButton("🔐 2FA", callback_data="2fa_help"),
-            InlineKeyboardButton("📬 Đọc mail", callback_data="mail_help"),
-        ],
+    rows: List[List[InlineKeyboardButton]] = []
+    copy_btn = _copy_code_button(copy_code)
+    if copy_btn:
+        rows.append([copy_btn])
+    rows.extend([
         [InlineKeyboardButton("🔄 Đọc lại", callback_data=repeat_cb)],
         [InlineKeyboardButton("⬅️ Menu chính", callback_data="back_main")],
     ])
+    return InlineKeyboardMarkup(rows)
 
 async def send_support(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(
@@ -2230,24 +2243,33 @@ async def send_2fa_help(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-def _build_totp_text(raw: str) -> Optional[str]:
+def _build_totp_result(raw: str) -> Tuple[Optional[str], Optional[str]]:
+    """Trả về (text hiển thị, mã đầu tiên để nút Copy)."""
     secrets_list = extract_totp_secrets(raw)
     if not secrets_list:
-        return None
+        return None, None
     lines = ["🔐 *Mã 2FA hiện tại*"]
+    primary_code: Optional[str] = None
     for idx, secret in enumerate(secrets_list[:10], start=1):
         try:
             code, remain = generate_totp(secret)
+            if primary_code is None:
+                primary_code = code
             lines.append(f"\n{idx}) `{code}` - còn *{remain}s*")
         except Exception:
             lines.append(f"\n{idx}) Secret không hợp lệ")
     if len(secrets_list) > 10:
         lines.append(f"\n\nChỉ xử lý 10 secret đầu tiên. Còn {len(secrets_list) - 10} secret chưa hiển thị.")
-    return "\n".join(lines)
+    return "\n".join(lines), primary_code
+
+
+def _build_totp_text(raw: str) -> Optional[str]:
+    text, _ = _build_totp_result(raw)
+    return text
 
 
 async def send_2fa_from_text(update: Update, context: ContextTypes.DEFAULT_TYPE, raw: str):
-    text = _build_totp_text(raw)
+    text, copy_code = _build_totp_result(raw)
     if not text:
         await send_2fa_help(update.effective_chat.id, context)
         return
@@ -2258,7 +2280,9 @@ async def send_2fa_from_text(update: Update, context: ContextTypes.DEFAULT_TYPE,
         LAST_ACTION_KIND[user_id] = "2fa"
         token = _store_reread_payload(user_id, "2fa", raw)
     await update.message.reply_text(
-        text, parse_mode="Markdown", reply_markup=quick_actions_kb(repeat_token=token)
+        text,
+        parse_mode="Markdown",
+        reply_markup=quick_actions_kb(repeat_token=token, copy_code=copy_code),
     )
 
 
@@ -2278,7 +2302,7 @@ async def regen_2fa_again(
             reply_markup=quick_actions_kb(),
         )
         return
-    text = _build_totp_text(raw)
+    text, copy_code = _build_totp_result(raw)
     if not text:
         await context.bot.send_message(
             chat_id=chat_id,
@@ -2291,7 +2315,7 @@ async def regen_2fa_again(
         chat_id=chat_id,
         text=text,
         parse_mode="Markdown",
-        reply_markup=quick_actions_kb(repeat_token=token),
+        reply_markup=quick_actions_kb(repeat_token=token, copy_code=copy_code),
     )
 
 
@@ -2352,16 +2376,21 @@ async def render_mail_result(loading_msg, raw: str, user_id: Optional[int] = Non
         except Exception:
             user_id = 0
     token = _store_reread_payload(user_id, "mail", raw) if user_id else ""
-    kb = quick_actions_kb(repeat_token=token)
 
     try:
         result = await asyncio.to_thread(read_inbox_messages, raw, 1)
     except MailReaderError as e:
-        await loading_msg.edit_text(f"Không đọc được mail:\n{e}", reply_markup=kb)
+        await loading_msg.edit_text(
+            f"Không đọc được mail:\n{e}",
+            reply_markup=quick_actions_kb(repeat_token=token),
+        )
         return
     except Exception as e:
         logger.exception("cmd_mail failed")
-        await loading_msg.edit_text(f"Lỗi không xác định khi đọc mail:\n{e}", reply_markup=kb)
+        await loading_msg.edit_text(
+            f"Lỗi không xác định khi đọc mail:\n{e}",
+            reply_markup=quick_actions_kb(repeat_token=token),
+        )
         return
 
     email = escape_markdown(result.get("email", ""), version=2)
@@ -2370,13 +2399,14 @@ async def render_mail_result(loading_msg, raw: str, user_id: Optional[int] = Non
         await loading_msg.edit_text(
             f"Không thấy mail nào trong inbox của `{email}`.",
             parse_mode="MarkdownV2",
-            reply_markup=kb,
+            reply_markup=quick_actions_kb(repeat_token=token),
         )
         return
 
     lines = [f"*Inbox:* `{email}`"]
     latest_msg = messages[0]
     latest_code = (latest_msg.get("codes") or "").split(",", 1)[0].strip()
+    copy_code = latest_code
     if latest_code:
         code_md = escape_markdown(latest_code, version=2)
         lines.extend(["", f"*Mã mới nhất:* `{code_md}`"])
@@ -2404,6 +2434,7 @@ async def render_mail_result(loading_msg, raw: str, user_id: Optional[int] = Non
     if len(text) > 3900:
         text = text[:3900] + "\n..."
 
+    kb = quick_actions_kb(repeat_token=token, copy_code=copy_code)
     await loading_msg.edit_text(
         text,
         parse_mode="MarkdownV2",
