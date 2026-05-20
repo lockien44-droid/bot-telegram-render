@@ -49,7 +49,6 @@ from telegram.helpers import escape_markdown
 
 from mail_reader import MailReaderError, read_inbox_messages
 from custom_emojis import (
-    chatgpt_icon_html,
     extract_custom_emoji_ids,
     get_emoji_id,
     gpt_product_icon_html,
@@ -1732,28 +1731,9 @@ def build_products_menu_kb(
     return InlineKeyboardMarkup(buttons)
 
 
-def build_products_menu_html(
-    products: List[Dict[str, Any]],
-    stock_ready: Dict[str, int],
-) -> str:
-    """Nội dung MENU — GPT dùng ``<tg-emoji emoji-id=\"…\">📱</tg-emoji>`` (parse_mode HTML)."""
-    lines: List[str] = []
-    for p in products:
-        sc = p["stock_code"]
-        ready = stock_ready.get(sc, 0)
-        pname = (p.get("name") or "").strip()
-        price_text = fmt_price(p["price"]).replace(" đ", " vnđ")
-        if is_gpt_product_name(pname) and get_emoji_id("chatgpt"):
-            prefix = chatgpt_icon_html()
-        else:
-            prefix = f"{_html.escape(product_icon(pname))} "
-        lines.append(
-            f"{prefix}<b>{_html.escape(pname)}</b> | {_html.escape(price_text)}|SL: {ready}"
-        )
-    text = "🛍 <b>MENU SẢN PHẨM</b>\n\n👉 Chọn sản phẩm bên dưới:"
-    if lines:
-        text += "\n\n" + "\n".join(lines)
-    return text
+def build_products_menu_html() -> str:
+    """Chỉ tiêu đề menu — danh sách sản phẩm hiển thị trên các nút inline bên dưới."""
+    return "🛍 <b>MENU SẢN PHẨM</b>\n\n👉 Chọn sản phẩm bên dưới:"
 
 
 async def _send_html_message(bot: Bot, chat_id: int, text: str, **kwargs):
@@ -2340,7 +2320,7 @@ async def show_products(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    menu_html = build_products_menu_html(products, stock_ready)
+    menu_html = build_products_menu_html()
     await _send_html_message(
         context.bot,
         chat_id,
