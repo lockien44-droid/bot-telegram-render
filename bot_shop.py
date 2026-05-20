@@ -49,7 +49,6 @@ from telegram.helpers import escape_markdown
 
 from mail_reader import MailReaderError, read_inbox_messages
 from custom_emojis import (
-    GPT_PRODUCT_TAG_PREFIX,
     chatgpt_icon_html,
     extract_custom_emoji_ids,
     get_emoji_id,
@@ -1686,7 +1685,7 @@ def _product_menu_button(p: Dict[str, Any], price_text: str, ready: int) -> Inli
     """Nút sản phẩm; GPT dùng ``icon_custom_emoji_id`` (PTB >= 22.7, chủ bot Premium)."""
     pname = p.get("name", "")
     pid = p["product_id"]
-    label = f"{GPT_PRODUCT_TAG_PREFIX} {p['name']} | {price_text}|SL: {ready}"
+    label = f"{p['name']} | {price_text}|SL: {ready}"
     cb = f"pdetail|{pid}"
     emoji_id = get_emoji_id("chatgpt") if is_gpt_product_name(pname) else ""
     if emoji_id:
@@ -1803,7 +1802,7 @@ def product_detail_text(p: Dict[str, Any], ready_qty: int) -> str:
     safe_name = _html.escape(name)
     icon_text = product_icon(name)
 
-    # GPT: 🏷️ + icon ChatGPT animated (giống tin mẫu Telegram), không chỉ 🤖.
+    # GPT: icon ChatGPT animated (HTML <tg-emoji>), không emoji 🏷️.
     if is_gpt_product_name(name) and get_emoji_id("chatgpt"):
         title_prefix = gpt_product_icon_html()
     else:
@@ -1832,7 +1831,7 @@ def product_detail_text_plain(p: Dict[str, Any], ready_qty: int) -> str:
     desc = desc.replace("`", "'")
     name = p.get("name", "")
     safe_name = escape_markdown(name, version=1)
-    prefix = "🏷️📱 " if is_gpt_product_name(name) else f"{product_icon(name)} "
+    prefix = "📱 " if is_gpt_product_name(name) else f"{product_icon(name)} "
     body = (
         f"{prefix}*{safe_name}*\n\n"
         f"💰 Giá: *{fmt_price(p['price'])}*\n"

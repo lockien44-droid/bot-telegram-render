@@ -33,7 +33,8 @@ EMOJI_FALLBACKS: dict[str, str] = {
     "chatgpt": (os.getenv("CUSTOM_EMOJI_CHATGPT_FALLBACK", "📱") or "📱").strip(),
 }
 
-GPT_PRODUCT_TAG_PREFIX = (os.getenv("GPT_PRODUCT_TAG_PREFIX", "🏷️") or "🏷️").strip()
+# Tiền tố trước icon GPT (để trống = chỉ hiện custom emoji, không thêm 🏷️).
+GPT_PRODUCT_TAG_PREFIX = (os.getenv("GPT_PRODUCT_TAG_PREFIX", "") or "").strip()
 
 _TG_EMOJI_RE = re.compile(
     r'<tg-emoji emoji-id="(\d+)">([^<]*)</tg-emoji>',
@@ -61,10 +62,11 @@ def tg_emoji(name_or_id: str, fallback: Optional[str] = None) -> str:
 
 
 def chatgpt_icon_html() -> str:
-    """🏷️ + custom emoji ChatGPT (HTML)."""
+    """Custom emoji ChatGPT (HTML ``<tg-emoji>``), không kèm emoji 🏷️."""
     if not get_emoji_id("chatgpt"):
         return "📱 "
-    return f"{GPT_PRODUCT_TAG_PREFIX}{tg_emoji('chatgpt')} "
+    prefix = GPT_PRODUCT_TAG_PREFIX
+    return f"{prefix}{tg_emoji('chatgpt')} "
 
 
 def strip_tg_emoji_html(text: str) -> str:
