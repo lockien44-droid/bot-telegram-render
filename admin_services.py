@@ -96,12 +96,12 @@ def snapshot(limit: int = 100, pool_limit: int = 2000, reveal_secrets: bool = Fa
     shop.init_sheets()
     products = shop.load_products()
     pool = _records(shop._ws_pool)
-    orders = _records(shop._ws_orders)
+    orders = [shop.normalize_sheet_row(o) for o in _records(shop._ws_orders)]
     users = _records(shop._ws_users)
     reservations = _records(shop._ws_res)
     fulfillments = _records(shop._ws_ful)
 
-    orders.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    orders.sort(key=shop.order_created_ts, reverse=True)
     limit = max(1, min(int(limit or 100), 300))
     pool_limit = max(1, min(int(pool_limit or 2000), 30000))
 

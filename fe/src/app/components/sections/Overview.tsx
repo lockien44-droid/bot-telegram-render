@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Badge } from "../ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 import { ShoppingCart, DollarSign, Clock, CheckCircle, XCircle, Users, Package, Warehouse, Bell } from "lucide-react";
-import { money, text, type AdminSnapshot } from "../../api";
+import { money, sortOrdersNewestFirst, text, type AdminSnapshot } from "../../api";
 import type { OrderNotification } from "../../notifications";
 import { NotificationFeed, NotificationFeedHeader } from "../NotificationFeed";
 import { getRevenueStats } from "../../revenue";
@@ -32,6 +32,10 @@ export function Overview({
   onOpenRevenue,
 }: OverviewProps) {
   const revenueStats = useMemo(() => (data ? getRevenueStats(data) : null), [data]);
+  const latestOrders = useMemo(
+    () => sortOrdersNewestFirst(data?.orders || []).slice(0, 10),
+    [data?.orders],
+  );
 
   if (!data) return <EmptyState />;
 
@@ -155,7 +159,7 @@ export function Overview({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {data.orders.slice(0, 10).map((o) => (
+                {latestOrders.map((o) => (
                   <TableRow key={o.order_id}>
                     <TableCell><code className="bg-muted px-1.5 py-0.5 rounded text-xs">{text(o.order_id)}</code></TableCell>
                     <TableCell>{text(o.stock_code)}</TableCell>

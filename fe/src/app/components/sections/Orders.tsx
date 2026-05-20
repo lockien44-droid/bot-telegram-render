@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Card, CardContent } from "../ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 import { Button } from "../ui/button";
@@ -7,7 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "../ui/dialog";
 import { Input } from "../ui/input";
 import { ClipboardList, Search } from "lucide-react";
-import { adminApi, money, text, type AdminSnapshot, type AnyRow } from "../../api";
+import { adminApi, money, sortOrdersNewestFirst, text, type AdminSnapshot, type AnyRow } from "../../api";
 
 type OrderStatus = "PENDING" | "PAID" | "DELIVERED" | "EXPIRED" | "CANCELLED";
 type OrderFilter = OrderStatus | "ALL" | "FAILED";
@@ -35,7 +35,7 @@ export function Orders({ data, adminKey, refresh, preset }: Props) {
     setFilterStatus(status === "FAILED" || ALL_STATUSES.includes(status as OrderStatus) ? status : "ALL");
   }, [preset?.nonce, preset?.status, preset?.orderId]);
 
-  const orders = data?.orders || [];
+  const orders = useMemo(() => sortOrdersNewestFirst(data?.orders || []), [data?.orders]);
   const visible = orders.filter((o) => {
     const status = text(o.status).toUpperCase();
     if (filterStatus === "FAILED" && !["EXPIRED", "CANCELLED"].includes(status)) return false;

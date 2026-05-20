@@ -915,12 +915,32 @@ def append_dashboard_notification_simple_sync(event: str, title: str, message: s
         logger.warning("append_row notifications (simple) thất bại (event=%s): %s", event, e)
 
 
-def _normalize_notif_row(row: Dict[str, str]) -> Dict[str, str]:
+def normalize_sheet_row(row: Dict[str, str]) -> Dict[str, str]:
     """Chuẩn hoá key cột (sheet có thể khác hoa/thường hoặc khoảng trắng)."""
     return {
         str(k).strip().lower().replace(" ", "_"): (v or "").strip()
         for k, v in row.items()
     }
+
+
+def _normalize_notif_row(row: Dict[str, str]) -> Dict[str, str]:
+    return normalize_sheet_row(row)
+
+
+def order_created_ts(order: Dict[str, str]) -> float:
+    """Timestamp đơn hàng — mới nhất lên trước."""
+    for key in ("created_at", "paid_at", "delivered_at"):
+        dt = parse_dt((order.get(key) or "").strip())
+        if dt:
+            return dt.timestamp()
+    oid = (order.get("order_id") or "").strip().upper()
+    m = re.match(r"^ORD(\d{14})", oid)
+    if m:
+        try:
+            return datetime.strptime(m.group(1), "%Y%m%d%H%M%S").replace(tzinfo=TZ).timestamp()
+        except Exception:
+            pass
+    return 0.0
 
 
 def _notification_created_ts(row: Dict[str, str]) -> float:
@@ -1418,7 +1438,8 @@ async def list_user_orders(user_id: int, limit: int = 10) -> List[Dict[str, str]
             )
             if resp.status_code == 200:
                 orders = filter_user_success_orders(resp.json().get("orders", []))
-                orders.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+                orders = [normalize_sheet_row(o) for o in orders]
+                orders.sort(key=order_created_ts, reverse=True)
                 return orders[:limit]
         except Exception as e:
             logger.warning("list_user_orders API failed %s: %s", user_id, e)
@@ -1445,7 +1466,7 @@ def list_user_orders_sheet(user_id: int, limit: int = 10) -> List[Dict[str, str]
             if (d.get("status") or "").strip().upper() in USER_ORDER_VISIBLE_STATUSES:
                 rows.append(d)
 
-    rows.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    rows.sort(key=order_created_ts, reverse=True)
     return rows[:limit]
 
 

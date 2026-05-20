@@ -62,3 +62,25 @@ export async function adminApi<T>(path: string, key: string, options: RequestIni
 export const money = (value: any) => `${Number(value || 0).toLocaleString("vi-VN")}đ`;
 
 export const text = (value: any) => (value === null || value === undefined || value === "" ? "—" : String(value));
+
+/** Parse thời gian đơn (created_at hoặc ORDYYYYMMDDHHMMSS… trong order_id). */
+export function orderTimeMs(o: AnyRow): number {
+  const raw = text(o.created_at);
+  if (raw !== "—") {
+    const t = Date.parse(raw.includes("T") ? raw : raw.replace(" ", "T"));
+    if (!Number.isNaN(t)) return t;
+  }
+  const m = /^ORD(\d{14})/i.exec(text(o.order_id));
+  if (m) {
+    const s = m[1];
+    const iso = `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}T${s.slice(8, 10)}:${s.slice(10, 12)}:${s.slice(12, 14)}`;
+    const t = Date.parse(iso);
+    if (!Number.isNaN(t)) return t;
+  }
+  return 0;
+}
+
+/** Đơn mới nhất ở đầu danh sách. */
+export function sortOrdersNewestFirst(orders: AnyRow[]): AnyRow[] {
+  return [...orders].sort((a, b) => orderTimeMs(b) - orderTimeMs(a));
+}
