@@ -48,7 +48,13 @@ from telegram.ext import (
 from telegram.helpers import escape_markdown
 
 from mail_reader import MailReaderError, read_inbox_messages
-from custom_emojis import extract_custom_emoji_ids, tg_emoji, get_emoji_id
+from custom_emojis import (
+    extract_custom_emoji_ids,
+    get_emoji_id,
+    gpt_product_icon_html,
+    is_gpt_product_name,
+    tg_emoji,
+)
 
 import httpx
 
@@ -1685,7 +1691,11 @@ def build_products_menu_kb(
 
         # Format theo yêu cầu: "Tên | 15.000 vnđ | Số Lượng Còn : 5"
         price_text = fmt_price(p["price"]).replace(" đ", " vnđ")
-        icon = product_icon(p.get("name", ""))
+        pname = p.get("name", "")
+        if is_gpt_product_name(pname) and get_emoji_id("chatgpt"):
+            icon = "🏷️🤖"
+        else:
+            icon = product_icon(pname)
         label = f"{icon} {p['name']} | {price_text}|SL: {ready}"
 
         buttons.append([InlineKeyboardButton(label, callback_data=f"pdetail|{p['product_id']}")])
@@ -1722,18 +1732,16 @@ def product_detail_text(p: Dict[str, Any], ready_qty: int) -> str:
 
     name = p.get("name", "")
     safe_name = _html.escape(name)
-    icon_text = product_icon(name)  # fallback emoji "thường" (vd: 🤖, 📘, ...)
+    icon_text = product_icon(name)
 
-    # Với sản phẩm ChatGPT/OpenAI và đã cấu hình custom_emoji_id, dùng emoji
-    # animated từ pack @ADROITPACKE. Người không có Premium sẽ thấy fallback.
-    s = name.lower().replace(" ", "")
-    if ("gpt" in s or "chatgpt" in s or "openai" in s) and get_emoji_id("chatgpt"):
-        icon = tg_emoji("chatgpt", icon_text)
+    # GPT: 🏷️ + icon ChatGPT animated (giống tin mẫu Telegram), không chỉ 🤖.
+    if is_gpt_product_name(name) and get_emoji_id("chatgpt"):
+        title_prefix = gpt_product_icon_html()
     else:
-        icon = _html.escape(icon_text)
+        title_prefix = f"{_html.escape(icon_text)} "
 
     body = (
-        f"{icon} <b>{safe_name}</b>\n\n"
+        f"{title_prefix}<b>{safe_name}</b>\n\n"
         f"💰 Giá: <b>{_html.escape(fmt_price(p['price']))}</b>\n"
         f"📦 Còn lại: <b>{ready_qty}</b>\n"
         f"📝 <b>Mô tả:</b>\n{desc}\n"
@@ -1743,6 +1751,30 @@ def product_detail_text(p: Dict[str, Any], ready_qty: int) -> str:
     )
     if ready_qty > 0:
         body += "🛒 <b>Chọn số lượng để mua</b> (bot sẽ tạo QR thanh toán ngay):"
+    else:
+        body += "💬 Sản phẩm tạm hết, vui lòng liên hệ hỗ trợ."
+    return body
+
+
+def product_detail_text_plain(p: Dict[str, Any], ready_qty: int) -> str:
+    """Fallback Markdown khi không gửi được custom emoji (vd: chủ bot chưa Premium)."""
+    status = "✅ *Còn hàng*" if ready_qty > 0 else "⛔ *Hết hàng*"
+    desc = (p.get("description") or "").strip() or "Chưa có mô tả."
+    desc = desc.replace("`", "'")
+    name = p.get("name", "")
+    safe_name = escape_markdown(name, version=1)
+    prefix = "🏷️🤖 " if is_gpt_product_name(name) else f"{product_icon(name)} "
+    body = (
+        f"{prefix}*{safe_name}*\n\n"
+        f"💰 Giá: *{fmt_price(p['price'])}*\n"
+        f"📦 Còn lại: *{ready_qty}*\n"
+        f"📝 *Mô tả:*\n{desc}\n"
+        f"📌 Trạng thái: {status}\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "⚡ Thanh toán xong hệ thống *giao tự động*.\n"
+    )
+    if ready_qty > 0:
+        body += "🛒 *Chọn số lượng để mua* (bot sẽ tạo QR thanh toán ngay):"
     else:
         body += "💬 Sản phẩm tạm hết, vui lòng liên hệ hỗ trợ."
     return body
@@ -2266,7 +2298,9 @@ async def show_product_detail(update: Update, context: ContextTypes.DEFAULT_TYPE
     kb = product_detail_kb(pid, ready)
 
     logo = product_logo_path(p.get("name") or "")
-    if logo:
+    # GPT + custom emoji: gửi TEXT (icon animated), không gửi ảnh PNG — caption ảnh thường không hiện đúng <tg-emoji>.
+    use_logo_photo = bool(logo) and not (is_gpt_product_name(p.get("name") or "") and get_emoji_id("chatgpt"))
+    if use_logo_photo:
         # Sản phẩm có logo riêng -> gửi message dạng PHOTO + caption.
         # Xoá message cũ (danh sách sản phẩm) trước khi gửi mới.
         chat_id = q.message.chat_id if q.message else q.from_user.id
@@ -2288,13 +2322,29 @@ async def show_product_detail(update: Update, context: ContextTypes.DEFAULT_TYPE
             logger.warning("send_photo product logo failed (%s): %s", logo, e)
             # Fallback xuống gửi text bên dưới
 
+    chat_id = q.message.chat_id if q.message else q.from_user.id
     try:
-        await q.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
-    except Exception:
-        chat_id = q.message.chat_id if q.message else q.from_user.id
-        await context.bot.send_message(
-            chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=kb
-        )
+        await q.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+    except Exception as e1:
+        logger.warning("edit_message_text product detail failed: %s", e1)
+        try:
+            await q.message.delete()
+        except Exception:
+            pass
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id, text=text, parse_mode=ParseMode.HTML, reply_markup=kb
+            )
+        except Exception as e2:
+            # Chủ bot chưa Premium hoặc custom_emoji không hợp lệ → fallback 🤖 thường.
+            if is_gpt_product_name(p.get("name") or "") and get_emoji_id("chatgpt"):
+                logger.warning("send_message custom emoji failed, fallback plain: %s", e2)
+                plain = product_detail_text_plain(p, ready)
+                await context.bot.send_message(
+                    chat_id=chat_id, text=plain, parse_mode=ParseMode.MARKDOWN, reply_markup=kb
+                )
+            else:
+                raise
 
 async def ask_qty(update: Update, context: ContextTypes.DEFAULT_TYPE, pid: str):
     q = update.callback_query

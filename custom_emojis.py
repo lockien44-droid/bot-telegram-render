@@ -26,6 +26,7 @@ Sending notes:
 
 from __future__ import annotations
 
+import os
 from html import escape
 from typing import Iterable, List, Tuple
 
@@ -45,6 +46,14 @@ EMOJI_IDS: dict[str, str] = {
     # Icon ChatGPT từ pack @ADROITPACKE (custom_emoji_id từ /emojiid)
     "chatgpt": "5359726582447487916",
 }
+
+# Ký tự fallback bọc trong <tg-emoji> — phải khớp placeholder khi gõ emoji (thường 🤖, length UTF-16 = 2).
+EMOJI_FALLBACKS: dict[str, str] = {
+    "chatgpt": (os.getenv("CUSTOM_EMOJI_CHATGPT_FALLBACK", "🤖") or "🤖").strip(),
+}
+
+# Emoji thường hiển thị trước icon ChatGPT (giống tin mẫu: 🏷️ + logo GPT).
+GPT_PRODUCT_TAG_PREFIX = (os.getenv("GPT_PRODUCT_TAG_PREFIX", "🏷️") or "🏷️").strip()
 
 
 def set_emoji_id(name: str, emoji_id: str) -> None:
@@ -67,12 +76,27 @@ def tg_emoji(name_or_id: str, fallback: str) -> str:
     If no ID is configured yet, the fallback emoji is returned untouched so
     messages keep working before the registry is populated.
     """
-    fb = (fallback or "").strip() or "•"
     raw = (name_or_id or "").strip()
     emoji_id = raw if raw.isdigit() else get_emoji_id(raw)
     if not emoji_id:
+        fb = (fallback or "").strip() or "•"
         return escape(fb)
+    fb = (fallback or EMOJI_FALLBACKS.get(raw.lower(), "") or "").strip() or "🤖"
     return f'<tg-emoji emoji-id="{escape(emoji_id)}">{escape(fb)}</tg-emoji>'
+
+
+def is_gpt_product_name(name: str) -> bool:
+    s = (name or "").lower().replace(" ", "")
+    return "gpt" in s or "chatgpt" in s or "openai" in s
+
+
+def gpt_product_icon_html() -> str:
+    """Tiền tố tiêu đề sản phẩm GPT: 🏷️ + icon ChatGPT (custom emoji)."""
+    if not get_emoji_id("chatgpt"):
+        return "🤖 "
+    tag = GPT_PRODUCT_TAG_PREFIX
+    gpt = tg_emoji("chatgpt", EMOJI_FALLBACKS.get("chatgpt", "🤖"))
+    return f"{tag}{gpt} "
 
 
 def extract_custom_emoji_ids(message: "Message") -> List[Tuple[str, str]]:
@@ -115,8 +139,12 @@ def extract_custom_emoji_ids(message: "Message") -> List[Tuple[str, str]]:
 
 __all__ = [
     "EMOJI_IDS",
+    "EMOJI_FALLBACKS",
+    "GPT_PRODUCT_TAG_PREFIX",
     "set_emoji_id",
     "get_emoji_id",
     "tg_emoji",
+    "is_gpt_product_name",
+    "gpt_product_icon_html",
     "extract_custom_emoji_ids",
 ]
