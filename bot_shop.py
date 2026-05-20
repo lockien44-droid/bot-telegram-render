@@ -55,6 +55,7 @@ from custom_emojis import (
     product_custom_emoji_key,
     product_custom_icon_html,
     strip_tg_emoji_html,
+    tg_emoji,
 )
 
 import httpx
@@ -82,6 +83,7 @@ logger = logging.getLogger("khoivan_store_bot")
 
 # ================== CONFIG ==================
 SHOP_NAME = os.getenv("SHOP_NAME", "Văn Minh Store").strip()
+SHOP_MENU_TITLE = (os.getenv("SHOP_MENU_TITLE", "") or SHOP_NAME or "Shop tài khoản Premium").strip()
 BOT_TOKEN = (os.getenv("BOT_TOKEN", "").strip() or "PUT_YOUR_BOT_TOKEN_HERE")
 
 GSHEET_ID = os.getenv("GSHEET_ID", "").strip()  # khuyên để ENV
@@ -418,6 +420,11 @@ def now_str() -> str:
 
 def fmt_price(vnd: int) -> str:
     return f"{vnd:,} đ".replace(",", ".")
+
+
+def fmt_price_menu(vnd: int) -> str:
+    """Giá trên nút menu shop (vd. 29,000đ)."""
+    return f"{vnd:,}đ"
 
 def normalize_int(v: Any, default: int = 0) -> int:
     try:
@@ -1681,11 +1688,15 @@ def product_icon(name: str) -> str:
 
 
 def _product_menu_button(p: Dict[str, Any], price_text: str, ready: int) -> InlineKeyboardButton:
-    """Nút sản phẩm; GPT/MS365 dùng ``icon_custom_emoji_id`` (PTB >= 22.7)."""
+    """Nút sản phẩm shop — hết hàng: ❌; còn hàng: icon custom emoji nếu có."""
     pname = p.get("name", "")
     pid = p["product_id"]
-    label = f"{p['name']} | {price_text}|SL: {ready}"
     cb = f"pdetail|{pid}"
+    if ready <= 0:
+        label = f"❌ {pname} - {price_text} (hết hàng)"
+        return InlineKeyboardButton(label, callback_data=cb)
+
+    label = f"{pname} - {price_text} (còn {ready})"
     emoji_key = product_custom_emoji_key(pname)
     emoji_id = get_emoji_id(emoji_key) if emoji_key else ""
     if emoji_id:
@@ -1700,10 +1711,10 @@ def _product_menu_button(p: Dict[str, Any], price_text: str, ready: int) -> Inli
         except Exception as e:
             logger.warning("InlineKeyboardButton icon_custom_emoji_id failed: %s", e)
     fb = EMOJI_FALLBACKS.get(emoji_key, "📱") if emoji_key else product_icon(pname)
-    return InlineKeyboardButton(f"{fb} {p['name']} | {price_text}|SL: {ready}", callback_data=cb)
+    return InlineKeyboardButton(f"{fb} {label}", callback_data=cb)
 
 
-def build_products_menu_kb(
+def build_shop_menu_kb(
     products: List[Dict[str, Any]],
     stock_ready: Dict[str, int],
 ) -> InlineKeyboardMarkup:
@@ -1712,29 +1723,50 @@ def build_products_menu_kb(
     for p in products:
         sc = p["stock_code"]
         ready = stock_ready.get(sc, 0)
-        price_text = fmt_price(p["price"]).replace(" đ", " vnđ")
+        price_text = fmt_price_menu(p["price"])
         buttons.append([_product_menu_button(p, price_text, ready)])
 
-    # 2 nút nhanh
-    buttons.append([
-        InlineKeyboardButton("📦 Đơn hàng", callback_data="go_orders"),
-        InlineKeyboardButton("💬 Hỗ trợ", callback_data="go_support"),
-    ])
-
-    buttons.append([
-        InlineKeyboardButton("🔐 2FA", callback_data="2fa_help"),
-        InlineKeyboardButton("📬 Đọc mail", callback_data="mail_help"),
-    ])
-
-    # Menu chính
-    buttons.append([InlineKeyboardButton("⬅️ Menu chính", callback_data="back_main")])
-
+    buttons.append([InlineKeyboardButton("✨ Làm mới", callback_data="refresh_shop")])
     return InlineKeyboardMarkup(buttons)
 
 
+def build_shop_catalog_html() -> str:
+    """Nội dung tin shop khi /start — tiêu đề, hỗ trợ, hướng dẫn chọn sản phẩm."""
+    title = _html.escape(SHOP_MENU_TITLE)
+    lines: List[str] = [f"<b>{title}</b> 🤖", ""]
+
+    if SUPPORT_TELE or SUPPORT_TELE_LINK:
+        tele_disp = _html.escape(SUPPORT_TELE or SUPPORT_TELE_LINK)
+        if SUPPORT_TELE_LINK:
+            lines.append(
+                f"{tg_emoji('telegram')} Hỗ trợ: "
+                f'<a href="{_html.escape(SUPPORT_TELE_LINK, quote=True)}">{tele_disp}</a>'
+            )
+        else:
+            lines.append(f"{tg_emoji('telegram')} Hỗ trợ: {tele_disp}")
+
+    if SUPPORT_ZALO_LINK:
+        zalo_disp = _html.escape(SUPPORT_ZALO_LINK)
+        lines.append(
+            f"{tg_emoji('zalo')} Zalo: "
+            f'<a href="{_html.escape(SUPPORT_ZALO_LINK, quote=True)}">{zalo_disp}</a>'
+        )
+    elif SUPPORT_ZALO:
+        lines.append(f"{tg_emoji('zalo')} Zalo: {_html.escape(SUPPORT_ZALO)}")
+
+    lines.extend(["", "🛍️ Chọn sản phẩm để mua:"])
+    return "\n".join(lines)
+
+
+def build_products_menu_kb(
+    products: List[Dict[str, Any]],
+    stock_ready: Dict[str, int],
+) -> InlineKeyboardMarkup:
+    return build_shop_menu_kb(products, stock_ready)
+
+
 def build_products_menu_html() -> str:
-    """Chỉ tiêu đề menu — danh sách sản phẩm hiển thị trên các nút inline bên dưới."""
-    return "🛍 <b>MENU SẢN PHẨM</b>\n\n👉 Chọn sản phẩm bên dưới:"
+    return build_shop_catalog_html()
 
 
 async def _send_html_message(bot: Bot, chat_id: int, text: str, **kwargs):
@@ -1889,16 +1921,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     schedule_upsert_user(update.effective_chat.id, user.username or "", user.full_name or "")
 
-    # 1) Welcome chính (kèm inline keyboard)
-    await update.message.reply_text(
-        welcome_text(user.full_name),
-        parse_mode="Markdown",
-        disable_web_page_preview=True,
-        reply_markup=start_inline_kb(),
-    )
+    await show_shop_catalog(update.effective_chat.id, context, force=True)
 
-    # 2) Đặt ReplyKeyboard cố định ở dưới (Sản phẩm + Hỗ trợ) — tin này KHÔNG xóa
-    #    để Telegram giữ keyboard luôn hiển thị (is_persistent=True).
     await update.message.reply_text(
         "👇 *Menu nhanh*",
         parse_mode="Markdown",
@@ -2298,37 +2322,76 @@ async def send_mail_help(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ================== PRODUCTS FLOW ==================
-async def show_products(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
+async def show_shop_catalog(
+    chat_id: int,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    force: bool = True,
+    edit_message=None,
+) -> None:
+    """Menu shop chính — /start, làm mới, xem sản phẩm."""
     try:
-        try:
-            await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-        except Exception:
-            pass
-        products, stock_ready = await refresh_catalog_cache(force=True)
+        if edit_message is None:
+            try:
+                await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+            except Exception:
+                pass
+        products, stock_ready = await refresh_catalog_cache(force=force)
     except Exception as e:
-        logger.exception("show_products error")
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"❌ Lỗi Google Sheets:\n{e}",
-            reply_markup=main_menu_keyboard(),
-        )
+        logger.exception("show_shop_catalog error")
+        err_text = f"❌ Lỗi Google Sheets:\n{e}"
+        if edit_message is not None:
+            try:
+                await edit_message.edit_text(err_text, reply_markup=main_menu_keyboard())
+            except Exception:
+                await context.bot.send_message(
+                    chat_id=chat_id, text=err_text, reply_markup=main_menu_keyboard()
+                )
+        else:
+            await context.bot.send_message(
+                chat_id=chat_id, text=err_text, reply_markup=main_menu_keyboard()
+            )
         return
 
     if not products:
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="❌ Chưa có sản phẩm trong tab PRODUCTS.",
-            reply_markup=main_menu_keyboard(),
+        empty_text = "❌ Chưa có sản phẩm trong tab PRODUCTS."
+        if edit_message is not None:
+            try:
+                await edit_message.edit_text(empty_text, reply_markup=main_menu_keyboard())
+            except Exception:
+                await context.bot.send_message(
+                    chat_id=chat_id, text=empty_text, reply_markup=main_menu_keyboard()
+                )
+        else:
+            await context.bot.send_message(
+                chat_id=chat_id, text=empty_text, reply_markup=main_menu_keyboard()
+            )
+        return
+
+    menu_html = build_shop_catalog_html()
+    kb = build_shop_menu_kb(products, stock_ready)
+    preview = bool(SUPPORT_ZALO_LINK)
+
+    if edit_message is not None:
+        await _edit_html_message(
+            edit_message,
+            menu_html,
+            reply_markup=kb,
+            disable_web_page_preview=not preview,
         )
         return
 
-    menu_html = build_products_menu_html()
     await _send_html_message(
         context.bot,
         chat_id,
         menu_html,
-        reply_markup=build_products_menu_kb(products, stock_ready),
+        reply_markup=kb,
+        disable_web_page_preview=not preview,
     )
+
+
+async def show_products(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
+    await show_shop_catalog(chat_id, context, force=True)
 
 async def show_product_detail(update: Update, context: ContextTypes.DEFAULT_TYPE, pid: str):
     q = update.callback_query
@@ -3945,6 +4008,12 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = (q.data or "").strip()
 
     # ✅ NÚT NHANH: Đơn hàng / Hỗ trợ
+    if data == "refresh_shop":
+        await q.answer("🔄 Đang làm mới...")
+        return await show_shop_catalog(
+            q.from_user.id, context, force=True, edit_message=q.message
+        )
+
     if data == "go_products":
         await q.answer()
         try:
@@ -4008,14 +4077,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.message.delete()
         except Exception:
             pass
-        await context.bot.send_message(
-            chat_id=q.from_user.id,
-            text=welcome_text(q.from_user.full_name),
-            parse_mode="Markdown",
-            disable_web_page_preview=True,
-            reply_markup=start_inline_kb(),
-        )
-        return
+        return await show_shop_catalog(q.from_user.id, context, force=True)
 
     if data == "back_products":
         await q.answer()
