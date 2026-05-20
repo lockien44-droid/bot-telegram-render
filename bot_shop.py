@@ -49,11 +49,13 @@ from telegram.helpers import escape_markdown
 
 from mail_reader import MailReaderError, read_inbox_messages
 from custom_emojis import (
+    GPT_PRODUCT_TAG_PREFIX,
+    chatgpt_icon_html,
     extract_custom_emoji_ids,
     get_emoji_id,
     gpt_product_icon_html,
     is_gpt_product_name,
-    product_detail_gpt_entities,
+    strip_tg_emoji_html,
     tg_emoji,
 )
 
@@ -1680,6 +1682,28 @@ def product_icon(name: str) -> str:
     return "📦"
 
 
+def _product_menu_button(p: Dict[str, Any], price_text: str, ready: int) -> InlineKeyboardButton:
+    """Nút sản phẩm; GPT dùng ``icon_custom_emoji_id`` (PTB >= 22.7, chủ bot Premium)."""
+    pname = p.get("name", "")
+    pid = p["product_id"]
+    label = f"{GPT_PRODUCT_TAG_PREFIX} {p['name']} | {price_text}|SL: {ready}"
+    cb = f"pdetail|{pid}"
+    emoji_id = get_emoji_id("chatgpt") if is_gpt_product_name(pname) else ""
+    if emoji_id:
+        try:
+            return InlineKeyboardButton(
+                text=label,
+                callback_data=cb,
+                icon_custom_emoji_id=emoji_id,
+            )
+        except TypeError:
+            logger.warning("icon_custom_emoji_id không hỗ trợ — nâng python-telegram-bot lên 22.7+")
+        except Exception as e:
+            logger.warning("InlineKeyboardButton icon_custom_emoji_id failed: %s", e)
+    icon = product_icon(pname) if not is_gpt_product_name(pname) else "📱"
+    return InlineKeyboardButton(f"{icon} {p['name']} | {price_text}|SL: {ready}", callback_data=cb)
+
+
 def build_products_menu_kb(
     products: List[Dict[str, Any]],
     stock_ready: Dict[str, int],
@@ -1689,17 +1713,8 @@ def build_products_menu_kb(
     for p in products:
         sc = p["stock_code"]
         ready = stock_ready.get(sc, 0)
-
-        # Format theo yêu cầu: "Tên | 15.000 vnđ | Số Lượng Còn : 5"
         price_text = fmt_price(p["price"]).replace(" đ", " vnđ")
-        pname = p.get("name", "")
-        if is_gpt_product_name(pname) and get_emoji_id("chatgpt"):
-            icon = "🏷️📱"
-        else:
-            icon = product_icon(pname)
-        label = f"{icon} {p['name']} | {price_text}|SL: {ready}"
-
-        buttons.append([InlineKeyboardButton(label, callback_data=f"pdetail|{p['product_id']}")])
+        buttons.append([_product_menu_button(p, price_text, ready)])
 
     # 2 nút nhanh
     buttons.append([
@@ -1716,6 +1731,59 @@ def build_products_menu_kb(
     buttons.append([InlineKeyboardButton("⬅️ Menu chính", callback_data="back_main")])
 
     return InlineKeyboardMarkup(buttons)
+
+
+def build_products_menu_html(
+    products: List[Dict[str, Any]],
+    stock_ready: Dict[str, int],
+) -> str:
+    """Nội dung MENU — GPT dùng ``<tg-emoji emoji-id=\"…\">📱</tg-emoji>`` (parse_mode HTML)."""
+    lines: List[str] = []
+    for p in products:
+        sc = p["stock_code"]
+        ready = stock_ready.get(sc, 0)
+        pname = (p.get("name") or "").strip()
+        price_text = fmt_price(p["price"]).replace(" đ", " vnđ")
+        if is_gpt_product_name(pname) and get_emoji_id("chatgpt"):
+            prefix = chatgpt_icon_html()
+        else:
+            prefix = f"{_html.escape(product_icon(pname))} "
+        lines.append(
+            f"{prefix}<b>{_html.escape(pname)}</b> | {_html.escape(price_text)}|SL: {ready}"
+        )
+    text = "🛍 <b>MENU SẢN PHẨM</b>\n\n👉 Chọn sản phẩm bên dưới:"
+    if lines:
+        text += "\n\n" + "\n".join(lines)
+    return text
+
+
+async def _send_html_message(bot: Bot, chat_id: int, text: str, **kwargs):
+    """Gửi HTML; nếu custom emoji bị từ chối thì bỏ thẻ ``<tg-emoji>`` và gửi lại."""
+    try:
+        return await bot.send_message(
+            chat_id=chat_id, text=text, parse_mode=ParseMode.HTML, **kwargs
+        )
+    except Exception as e:
+        err = str(e).lower()
+        if "emoji" in err or "parse" in err or "custom" in err:
+            plain = strip_tg_emoji_html(text)
+            logger.warning("send_message custom emoji rejected, plain fallback: %s", e)
+            return await bot.send_message(
+                chat_id=chat_id, text=plain, parse_mode=ParseMode.HTML, **kwargs
+            )
+        raise
+
+
+async def _edit_html_message(message, text: str, **kwargs):
+    try:
+        return await message.edit_text(text, parse_mode=ParseMode.HTML, **kwargs)
+    except Exception as e:
+        err = str(e).lower()
+        if "emoji" in err or "parse" in err or "custom" in err:
+            plain = strip_tg_emoji_html(text)
+            logger.warning("edit_message custom emoji rejected, plain fallback: %s", e)
+            return await message.edit_text(text=plain, parse_mode=ParseMode.HTML, **kwargs)
+        raise
 
 
 def product_detail_text(p: Dict[str, Any], ready_qty: int) -> str:
@@ -2273,15 +2341,11 @@ async def show_products(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    text = (
-        "🛍 *MENU SẢN PHẨM*\n\n"
-        "👉 Chọn sản phẩm bên dưới:"
-    )
-
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=text,
-        parse_mode="Markdown",
+    menu_html = build_products_menu_html(products, stock_ready)
+    await _send_html_message(
+        context.bot,
+        chat_id,
+        menu_html,
         reply_markup=build_products_menu_kb(products, stock_ready),
     )
 
@@ -2299,30 +2363,18 @@ async def show_product_detail(update: Update, context: ContextTypes.DEFAULT_TYPE
     pname = p.get("name") or ""
     chat_id = q.message.chat_id if q.message else q.from_user.id
     is_gpt = is_gpt_product_name(pname) and get_emoji_id("chatgpt")
+    text = product_detail_text(p, ready)
 
-    # GPT: gửi tin mới với MessageEntity (placeholder 📱) — chuẩn như webhook Telegram gửi.
     if is_gpt:
-        gpt_text, gpt_entities = product_detail_gpt_entities(p, ready, fmt_price=fmt_price)
         try:
             await q.message.delete()
         except Exception:
             pass
-        try:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=gpt_text,
-                entities=gpt_entities,
-                reply_markup=kb,
-            )
-            return
-        except Exception as e:
-            logger.warning("send_message GPT entities failed: %s", e)
-
-    text = product_detail_text(p, ready)
+        await _send_html_message(context.bot, chat_id, text, reply_markup=kb)
+        return
 
     logo = product_logo_path(pname)
-    # GPT + custom emoji: gửi TEXT (icon animated), không gửi ảnh PNG — caption ảnh thường không hiện đúng <tg-emoji>.
-    use_logo_photo = bool(logo) and not is_gpt
+    use_logo_photo = bool(logo)
     if use_logo_photo:
         # Sản phẩm có logo riêng -> gửi message dạng PHOTO + caption.
         # Xoá message cũ (danh sách sản phẩm) trước khi gửi mới.
@@ -2345,27 +2397,14 @@ async def show_product_detail(update: Update, context: ContextTypes.DEFAULT_TYPE
             # Fallback xuống gửi text bên dưới
 
     try:
-        await q.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+        await _edit_html_message(q.message, text, reply_markup=kb)
     except Exception as e1:
         logger.warning("edit_message_text product detail failed: %s", e1)
         try:
             await q.message.delete()
         except Exception:
             pass
-        try:
-            await context.bot.send_message(
-                chat_id=chat_id, text=text, parse_mode=ParseMode.HTML, reply_markup=kb
-            )
-        except Exception as e2:
-            # Chủ bot chưa Premium hoặc custom_emoji không hợp lệ → fallback 🤖 thường.
-            if is_gpt_product_name(p.get("name") or "") and get_emoji_id("chatgpt"):
-                logger.warning("send_message custom emoji failed, fallback plain: %s", e2)
-                plain = product_detail_text_plain(p, ready)
-                await context.bot.send_message(
-                    chat_id=chat_id, text=plain, parse_mode=ParseMode.MARKDOWN, reply_markup=kb
-                )
-            else:
-                raise
+        await _send_html_message(context.bot, chat_id, text, reply_markup=kb)
 
 async def ask_qty(update: Update, context: ContextTypes.DEFAULT_TYPE, pid: str):
     q = update.callback_query

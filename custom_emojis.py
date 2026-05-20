@@ -1,88 +1,79 @@
-"""Custom (premium) emoji helpers for the Telegram bot.
+"""Custom (premium) emoji helpers — gửi theo Bot API (HTML ``<tg-emoji>``).
 
-Telegram premium emoji are referenced by a numeric ``custom_emoji_id`` that is
-unique per emoji (not per pack). The IDs are NOT public — you must extract them
-from a real Telegram message that contains the emoji.
+Ví dụ (chủ bot cần Telegram Premium):
 
-Workflow:
-    1) Send (or forward) a message containing the desired premium emoji to the
-       bot — for example, the ChatGPT-shaped emoji from the @ADROITPACKE pack.
-    2) Reply to that message with ``/emojiid`` (admin only). The bot will print
-       the ``custom_emoji_id`` for every premium emoji in the message.
-    3) Paste the ID into ``EMOJI_IDS`` below under a friendly name.
-    4) Anywhere in the bot, use ``tg_emoji("chatgpt", "💬")`` to render the
-       emoji inside an HTML-formatted message.
+    await bot.send_message(
+        chat_id,
+        '<tg-emoji emoji-id="5359726582447487916">📱</tg-emoji> Hello',
+        parse_mode="HTML",
+    )
 
-Sending notes:
-    * The bot must send messages with ``parse_mode="HTML"`` (or with explicit
-      ``MessageEntity`` objects of type ``custom_emoji``) for the emoji to be
-      rendered as the animated version.
-    * The text wrapped inside ``<tg-emoji>`` must be exactly ONE regular emoji
-      char — that emoji is used as the fallback for users without Premium.
-    * Per Bot API 9.4 (Feb 2026): the BOT OWNER must have Telegram Premium for
-      the bot to be allowed to send custom emoji. Without Premium the API will
-      reject the message; the fallback emoji will not be auto-substituted.
+Placeholder ``📱`` phải khớp đúng ký tự trong tin gốc (entity length = 2 UTF-16).
 """
 
 from __future__ import annotations
 
 import os
+import re
 from html import escape
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 try:
-    # Optional — only used for type hints / runtime extraction.
     from telegram import Message, MessageEntity
-except Exception:  # pragma: no cover — keep module importable without PTB
+except Exception:  # pragma: no cover
     Message = None  # type: ignore[assignment]
     MessageEntity = None  # type: ignore[assignment]
 
 
-# ---------------------------------------------------------------------------
-# Registry of known custom emoji IDs.
-# Fill these in by running /emojiid on a message that contains the emoji.
-# ---------------------------------------------------------------------------
 EMOJI_IDS: dict[str, str] = {
-    # Icon ChatGPT từ pack @ADROITPACKE (custom_emoji_id từ /emojiid)
     "chatgpt": "5359726582447487916",
 }
 
-# Ký tự placeholder BẮT BUỘC khớp tin gốc (text "📱", length UTF-16 = 2, id 5359726582447487916).
 EMOJI_FALLBACKS: dict[str, str] = {
     "chatgpt": (os.getenv("CUSTOM_EMOJI_CHATGPT_FALLBACK", "📱") or "📱").strip(),
 }
 
-# Emoji thường hiển thị trước icon ChatGPT (giống tin mẫu: 🏷️ + logo GPT).
 GPT_PRODUCT_TAG_PREFIX = (os.getenv("GPT_PRODUCT_TAG_PREFIX", "🏷️") or "🏷️").strip()
+
+_TG_EMOJI_RE = re.compile(
+    r'<tg-emoji emoji-id="(\d+)">([^<]*)</tg-emoji>',
+    re.IGNORECASE,
+)
 
 
 def set_emoji_id(name: str, emoji_id: str) -> None:
-    """Register a custom emoji ID at runtime (e.g. from a DB / Sheet)."""
     EMOJI_IDS[name.strip().lower()] = (emoji_id or "").strip()
 
 
 def get_emoji_id(name: str) -> str:
-    """Return the stored custom emoji ID for ``name`` or an empty string."""
     return EMOJI_IDS.get((name or "").strip().lower(), "")
 
 
-def tg_emoji(name_or_id: str, fallback: str) -> str:
-    """Return an HTML snippet that renders as a custom emoji.
-
-    ``name_or_id`` may be either a friendly key in :data:`EMOJI_IDS` or the
-    raw numeric ID. ``fallback`` MUST be exactly one regular emoji character;
-    it is what non-Premium users (and clients that can't load the sticker) see.
-
-    If no ID is configured yet, the fallback emoji is returned untouched so
-    messages keep working before the registry is populated.
-    """
+def tg_emoji(name_or_id: str, fallback: Optional[str] = None) -> str:
+    """Trả về thẻ HTML ``<tg-emoji>`` (dùng với ``parse_mode='HTML'``)."""
     raw = (name_or_id or "").strip()
     emoji_id = raw if raw.isdigit() else get_emoji_id(raw)
     if not emoji_id:
-        fb = (fallback or "").strip() or "•"
-        return escape(fb)
-    fb = (fallback or EMOJI_FALLBACKS.get(raw.lower(), "") or "").strip() or "📱"
+        return escape((fallback or "").strip() or "•")
+    key = raw.lower() if not raw.isdigit() else ""
+    fb = (fallback or EMOJI_FALLBACKS.get(key, "") or "").strip() or "📱"
     return f'<tg-emoji emoji-id="{escape(emoji_id)}">{escape(fb)}</tg-emoji>'
+
+
+def chatgpt_icon_html() -> str:
+    """🏷️ + custom emoji ChatGPT (HTML)."""
+    if not get_emoji_id("chatgpt"):
+        return "📱 "
+    return f"{GPT_PRODUCT_TAG_PREFIX}{tg_emoji('chatgpt')} "
+
+
+def strip_tg_emoji_html(text: str) -> str:
+    """Bỏ thẻ tg-emoji → chỉ còn ký tự fallback (khi API từ chối custom emoji)."""
+
+    def _repl(m: re.Match[str]) -> str:
+        return m.group(2) or ""
+
+    return _TG_EMOJI_RE.sub(_repl, text or "")
 
 
 def is_gpt_product_name(name: str) -> bool:
@@ -91,16 +82,10 @@ def is_gpt_product_name(name: str) -> bool:
 
 
 def gpt_product_icon_html() -> str:
-    """Tiền tố tiêu đề sản phẩm GPT: 🏷️ + icon ChatGPT (custom emoji)."""
-    if not get_emoji_id("chatgpt"):
-        return "📱 "
-    tag = GPT_PRODUCT_TAG_PREFIX
-    gpt = tg_emoji("chatgpt", EMOJI_FALLBACKS.get("chatgpt", "📱"))
-    return f"{tag}{gpt} "
+    return chatgpt_icon_html()
 
 
 def utf16_len(text: str) -> int:
-    """Độ dài chuỗi theo UTF-16 (Telegram entity offset/length)."""
     return len((text or "").encode("utf-16-le")) // 2
 
 
@@ -110,10 +95,7 @@ def product_detail_gpt_entities(
     *,
     fmt_price,
 ) -> Tuple[str, List[Any]]:
-    """Tin chi tiết GPT gửi bằng ``entities`` (không parse_mode) — chuẩn Bot API.
-
-    Placeholder custom emoji: ``📱`` (offset 0, length 2) như webhook mẫu.
-    """
+    """Fallback gửi bằng entities (nếu HTML không dùng được)."""
     if MessageEntity is None:
         return "", []
 
@@ -164,10 +146,6 @@ def product_detail_gpt_entities(
 
 
 def extract_custom_emoji_ids(message: "Message") -> List[Tuple[str, str]]:
-    """Return ``[(fallback_char, custom_emoji_id), ...]`` for every premium
-    emoji entity in ``message`` (text + caption + entities + caption_entities).
-    Preserves order; deduplicates by ``custom_emoji_id``.
-    """
     if message is None:
         return []
 
@@ -188,7 +166,6 @@ def extract_custom_emoji_ids(message: "Message") -> List[Tuple[str, str]]:
             if not emoji_id or emoji_id in seen:
                 continue
             try:
-                # ent.offset / ent.length are in UTF-16 code units.
                 utf16 = text.encode("utf-16-le")
                 snippet = utf16[ent.offset * 2 : (ent.offset + ent.length) * 2].decode(
                     "utf-16-le", errors="replace"
@@ -208,6 +185,8 @@ __all__ = [
     "set_emoji_id",
     "get_emoji_id",
     "tg_emoji",
+    "chatgpt_icon_html",
+    "strip_tg_emoji_html",
     "is_gpt_product_name",
     "gpt_product_icon_html",
     "utf16_len",
