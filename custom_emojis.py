@@ -29,12 +29,16 @@ EMOJI_IDS: dict[str, str] = {
     "chatgpt": "5359726582447487916",
     "ms365": "5370857634440170316",
     "elevenlabs": "5373310679241466020",
+    "telegram": "5330237710655306682",
+    "zalo": "6246536783887076725",
 }
 
 EMOJI_FALLBACKS: dict[str, str] = {
     "chatgpt": (os.getenv("CUSTOM_EMOJI_CHATGPT_FALLBACK", "📱") or "📱").strip(),
     "ms365": (os.getenv("CUSTOM_EMOJI_MS365_FALLBACK", "📱") or "📱").strip(),
     "elevenlabs": (os.getenv("CUSTOM_EMOJI_ELEVENLABS_FALLBACK", "🌀") or "🌀").strip(),
+    "telegram": (os.getenv("CUSTOM_EMOJI_TELEGRAM_FALLBACK", "📱") or "📱").strip(),
+    "zalo": (os.getenv("CUSTOM_EMOJI_ZALO_FALLBACK", "😀") or "😀").strip(),
 }
 
 # Tiền tố trước icon GPT (để trống = chỉ hiện custom emoji, không thêm 🏷️).
@@ -61,7 +65,7 @@ def tg_emoji(name_or_id: str, fallback: Optional[str] = None) -> str:
     if not emoji_id:
         return escape((fallback or "").strip() or "•")
     key = raw.lower() if not raw.isdigit() else ""
-    fb = (fallback or EMOJI_FALLBACKS.get(key, "") or "").strip() or "📱"
+    fb = (fallback or EMOJI_FALLBACKS.get(key, "") or "").strip() or "•"
     return f'<tg-emoji emoji-id="{escape(emoji_id)}">{escape(fb)}</tg-emoji>'
 
 
@@ -87,6 +91,16 @@ def is_elevenlabs_product_name(name: str) -> bool:
     )
 
 
+def is_telegram_product_name(name: str) -> bool:
+    s = (name or "").lower().replace(" ", "")
+    return "telegram" in s or "telepremium" in s
+
+
+def is_zalo_product_name(name: str) -> bool:
+    s = (name or "").lower().replace(" ", "")
+    return "zalo" in s
+
+
 def product_custom_emoji_key(name: str) -> Optional[str]:
     """Khóa registry custom emoji cho sản phẩm (``chatgpt``, ``ms365``, …) hoặc None."""
     if is_gpt_product_name(name) and get_emoji_id("chatgpt"):
@@ -95,6 +109,10 @@ def product_custom_emoji_key(name: str) -> Optional[str]:
         return "ms365"
     if is_elevenlabs_product_name(name) and get_emoji_id("elevenlabs"):
         return "elevenlabs"
+    if is_telegram_product_name(name) and get_emoji_id("telegram"):
+        return "telegram"
+    if is_zalo_product_name(name) and get_emoji_id("zalo"):
+        return "zalo"
     return None
 
 
@@ -240,6 +258,8 @@ __all__ = [
     "is_gpt_product_name",
     "is_ms365_product_name",
     "is_elevenlabs_product_name",
+    "is_telegram_product_name",
+    "is_zalo_product_name",
     "product_custom_emoji_key",
     "product_custom_icon_html",
     "product_custom_icon_html_by_key",
