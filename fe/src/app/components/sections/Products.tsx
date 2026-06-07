@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Card, CardContent } from "../ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 import { Button } from "../ui/button";
@@ -16,7 +16,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "../ui/alert-dialog";
-import { Plus, Pencil, Package, Trash2, Megaphone, Send } from "lucide-react";
+import { ArrowUpDown, ChevronDown, Plus, Pencil, Package, Trash2, Megaphone, Send } from "lucide-react";
 import { Textarea } from "../ui/textarea";
 import { Checkbox } from "../ui/checkbox";
 import { toast } from "sonner";
@@ -56,6 +56,9 @@ export function Products({ data, adminKey, refresh, embedded, onAddStock }: Prop
   const [notifySending, setNotifySending] = useState(false);
   const [notifyAddShopBtn, setNotifyAddShopBtn] = useState(true);
   const [notifyConfirmOpen, setNotifyConfirmOpen] = useState(false);
+  const [categoryOpen, setCategoryOpen] = useState(false);
+  const [sortProducts, setSortProducts] = useState(false);
+  const categoryInputRef = useRef<HTMLInputElement | null>(null);
 
   type BroadcastResult = {
     ok?: number;
@@ -199,6 +202,15 @@ export function Products({ data, adminKey, refresh, embedded, onAddStock }: Prop
     }
     return out;
   }, [products]);
+  const visibleProducts = useMemo(() => {
+    if (!sortProducts) return products;
+    return [...products].sort((a, b) => {
+      const ca = inferCategoryName(a).toLowerCase();
+      const cb = inferCategoryName(b).toLowerCase();
+      if (ca !== cb) return ca.localeCompare(cb);
+      return text(a.name).localeCompare(text(b.name));
+    });
+  }, [products, sortProducts]);
 
   return (
     <div className="space-y-4">
@@ -224,6 +236,15 @@ export function Products({ data, adminKey, refresh, embedded, onAddStock }: Prop
             title="Gửi danh sách sản phẩm còn hàng tới tất cả khách đã /start"
           >
             <Megaphone size={15} /> {broadcasting ? "Đang gửi..." : "Cập nhật kho cho khách"}
+          </Button>
+          <Button
+            size="sm"
+            variant={sortProducts ? "secondary" : "outline"}
+            className="gap-1.5"
+            onClick={() => setSortProducts((v) => !v)}
+            title="Sắp xếp theo danh mục rồi tên sản phẩm"
+          >
+            <ArrowUpDown size={15} /> Sắp xếp sản phẩm
           </Button>
           <Button size="sm" className="gap-1.5" onClick={openAdd}><Plus size={15} /> Thêm danh mục</Button>
         </div>
@@ -251,7 +272,7 @@ export function Products({ data, adminKey, refresh, embedded, onAddStock }: Prop
               </TableRow>
             </TableHeader>
             <TableBody>
-              {products.map((p) => (
+              {visibleProducts.map((p) => (
                 <TableRow
                   key={p.product_id || p.stock_code}
                   className={onAddStock ? "cursor-pointer hover:bg-emerald-50/60" : undefined}
@@ -297,15 +318,59 @@ export function Products({ data, adminKey, refresh, embedded, onAddStock }: Prop
             <div className="space-y-1"><Label>Product ID</Label><Input value={form.product_id} onChange={(e) => setForm({ ...form, product_id: e.target.value })} placeholder="Bỏ trống để tự tạo" /></div>
             <div className="space-y-1">
               <Label>Danh mục</Label>
-              <Input
-                list="product-category-options"
-                value={form.category}
-                onChange={(e) => setForm({ ...form, category: e.target.value })}
-                placeholder="Nhập danh mục mới hoặc chọn danh mục cũ"
-              />
-              <datalist id="product-category-options">
-                {categories.map((c) => <option key={c} value={c} />)}
-              </datalist>
+              <div className="relative">
+                <Input
+                  ref={categoryInputRef}
+                  value={form.category}
+                  onFocus={() => setCategoryOpen(true)}
+                  onChange={(e) => {
+                    setForm({ ...form, category: e.target.value });
+                    setCategoryOpen(true);
+                  }}
+                  placeholder="Nhập danh mục mới hoặc chọn danh mục cũ"
+                  className="pr-10"
+                />
+                <button
+                  type="button"
+                  className="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded hover:bg-muted"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    setCategoryOpen((v) => !v);
+                    categoryInputRef.current?.focus();
+                  }}
+                  aria-label="Chọn danh mục"
+                >
+                  <ChevronDown size={18} />
+                </button>
+                {categoryOpen && (
+                  <div className="absolute left-0 top-[calc(100%+6px)] z-50 max-h-60 w-full overflow-y-auto rounded-md border bg-white p-1 shadow-lg">
+                    {categories.map((c) => (
+                      <button
+                        key={c}
+                        type="button"
+                        className="block w-full rounded-sm px-3 py-2 text-left text-sm hover:bg-muted"
+                        onClick={() => {
+                          setForm({ ...form, category: c });
+                          setCategoryOpen(false);
+                        }}
+                      >
+                        {c}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      className="block w-full rounded-sm px-3 py-2 text-left text-sm font-medium text-emerald-700 hover:bg-emerald-50"
+                      onClick={() => {
+                        setForm({ ...form, category: "" });
+                        setCategoryOpen(false);
+                        window.setTimeout(() => categoryInputRef.current?.focus(), 0);
+                      }}
+                    >
+                      Mục khác - nhập danh mục mới
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
             <div className="space-y-1"><Label>Tên sản phẩm</Label><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></div>
             <div className="space-y-1"><Label>Stock Code</Label><Input value={form.stock_code} onChange={(e) => setForm({ ...form, stock_code: e.target.value.toUpperCase() })} /></div>
