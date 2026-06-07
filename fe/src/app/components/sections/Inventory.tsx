@@ -56,10 +56,9 @@ export function Inventory({ data, adminKey, refresh, preset, addStockPreset, emb
   const productCodes = useMemo(
     () => {
       const fromProducts = (data?.products || []).map((p) => normalizeCode(p.stock_code));
-      const fromPool = (data?.pool || []).map((p) => normalizeCode(p.stock_code));
-      return Array.from(new Set([...fromProducts, ...fromPool].filter(isRealCode))).sort();
+      return Array.from(new Set(fromProducts.filter(isRealCode))).sort();
     },
-    [data],
+    [data?.products],
   );
   const counts = {
     READY: pool.filter((i) => text(i.status).toUpperCase() === "READY").length,
@@ -135,6 +134,15 @@ export function Inventory({ data, adminKey, refresh, preset, addStockPreset, emb
     setSectionTab("add");
     toast.info(`Thêm stock cho ${code}`, { description: "Nhập mỗi dòng 1 account/secret rồi bấm Thêm vào kho." });
   }, [addStockPreset?.nonce, addStockPreset?.stockCode]);
+
+  useEffect(() => {
+    if (filterCode !== "ALL" && !productCodes.includes(normalizeCode(filterCode))) {
+      setFilterCode("ALL");
+    }
+    if (addCode && !productCodes.includes(normalizeCode(addCode))) {
+      setAddCode("");
+    }
+  }, [productCodes, filterCode, addCode]);
 
   const addStock = async () => {
     setBusy(true);

@@ -190,10 +190,9 @@ export function Products({ data, adminKey, refresh, embedded, onAddStock }: Prop
 
   const products = data?.products || [];
   const categories = useMemo(() => {
-    const base = ["CAPCUT", "KIRO", "MICROSOFT", "CHATGPT", "SPOTIFY"];
     const seen = new Set<string>();
     const out: string[] = [];
-    for (const c of base.concat(products.map(inferCategoryName))) {
+    for (const c of products.map(inferCategoryName)) {
       const val = c.trim();
       const key = val.toLowerCase();
       if (!val || seen.has(key)) continue;
