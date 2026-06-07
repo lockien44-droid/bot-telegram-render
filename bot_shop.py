@@ -735,6 +735,26 @@ def _safe_secret(s: str) -> str:
     # tránh vỡ Markdown nếu secret có dấu `
     return (s or "").replace("`", "'").strip()
 
+
+def _plain_usage_guide(raw: str) -> str:
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    match = re.search(r"\[[^\]]+\]\((https?://[^)]+)\)", raw)
+    return match.group(1).strip() if match else raw
+
+
+async def usage_guide_line_for_stock(stock_code: str) -> str:
+    product = await find_product_by_stock_code(stock_code)
+    usage_guide = _plain_usage_guide((product or {}).get("usage_guide") or "")
+    if not usage_guide:
+        return ""
+    return f"📘 *Hướng dẫn sử dụng:* {escape_markdown(usage_guide, version=1)}"
+
+
+def file_delivery_line() -> str:
+    return "📄 File .txt chứa đầy đủ thông tin ở đây (bấm để tải & copy nhanh)."
+
 # ================== GOOGLE SHEETS ==================
 
 async def upsert_user(chat_id: int, username: str = "", full_name: str = "") -> None:
@@ -1163,6 +1183,7 @@ def load_products() -> List[Dict[str, Any]]:
 
         # ✅ lấy mô tả riêng từng sản phẩm (từ cột description)
         desc = (r.get("description") or "").strip()
+        usage_guide = (r.get("usage_guide") or "").strip()
 
         if product_id and stock_code and name:
             out.append({
@@ -1171,6 +1192,7 @@ def load_products() -> List[Dict[str, Any]]:
                 "price": price,
                 "stock_code": stock_code,
                 "description": desc,   # ✅ thêm field
+                "usage_guide": usage_guide,
             })
     return out
 
@@ -3221,6 +3243,7 @@ async def confirm_paid(update: Update, context: ContextTypes.DEFAULT_TYPE, order
 
         secrets_md = [f"{i}) `{_safe_secret(s)}`" for i, s in enumerate(secrets_plain, start=1)]
         qty_val = normalize_int(order.get("qty"), len(secrets_plain) if secrets_plain else 1)
+        usage_guide_line = await usage_guide_line_for_stock(stock_code)
 
         # edit checkout message -> best effort
         delivered_caption = (
@@ -3266,7 +3289,7 @@ async def confirm_paid(update: Update, context: ContextTypes.DEFAULT_TYPE, order
                     "👀 *Preview (1–2 dòng):*\n"
                     f"{preview_md}\n"
                     f"{'…' if more_count > 0 else ''}\n\n"
-                    "📎 *Xem đầy đủ trong file .txt đính kèm*."
+                    f"{usage_guide_line or file_delivery_line()}"
                 ),
                 parse_mode="Markdown",
                 reply_markup=main_menu_keyboard(),
@@ -3274,6 +3297,7 @@ async def confirm_paid(update: Update, context: ContextTypes.DEFAULT_TYPE, order
             return
 
         deliver_text_md = "\n".join(secrets_md) if secrets_md else "(trống)"
+        guide_suffix = f"\n\n{usage_guide_line}" if usage_guide_line else ""
         await context.bot.send_message(
             chat_id=q.from_user.id,
             text=(
@@ -3285,6 +3309,7 @@ async def confirm_paid(update: Update, context: ContextTypes.DEFAULT_TYPE, order
                 f"⏱ *Thời gian:* {delivered_at}\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"🎁 *Thông tin nhận được:*\n{deliver_text_md}"
+                f"{guide_suffix}"
             ),
             parse_mode="Markdown",
             reply_markup=main_menu_keyboard(),
@@ -3358,6 +3383,7 @@ async def confirm_paid(update: Update, context: ContextTypes.DEFAULT_TYPE, order
                 pass
 
     qty_val = normalize_int(order.get("qty"), len(secrets_plain) if secrets_plain else len(items))
+    usage_guide_line = await usage_guide_line_for_stock(stock_code)
 
     delivered_row = dict(order)
     delivered_row["status"] = "DELIVERED"
@@ -3394,7 +3420,7 @@ async def confirm_paid(update: Update, context: ContextTypes.DEFAULT_TYPE, order
                 "👀 *Preview (1–2 dòng):*\n"
                 f"{preview_md}\n"
                 f"{'…' if more_count > 0 else ''}\n\n"
-                "📎 *Xem đầy đủ trong file .txt đính kèm* (bấm để copy nhanh).\n"
+                f"{usage_guide_line or file_delivery_line()}\n"
                 "🔐 Nếu là tài khoản, vui lòng *đổi mật khẩu ngay* sau khi đăng nhập."
             ),
             parse_mode="Markdown",
@@ -3402,6 +3428,7 @@ async def confirm_paid(update: Update, context: ContextTypes.DEFAULT_TYPE, order
         )
         return
 
+    guide_suffix = f"{usage_guide_line}\n\n" if usage_guide_line else ""
     await context.bot.send_message(
         chat_id=q.from_user.id,
         text=(
@@ -3413,6 +3440,7 @@ async def confirm_paid(update: Update, context: ContextTypes.DEFAULT_TYPE, order
             f"⏱ *Thời gian:* {delivered_at}\n"
             "━━━━━━━━━━━━━━━━━━\n"
             f"🎁 *Thông tin nhận được:*\n{deliver_text_md}\n\n"
+            f"{guide_suffix}"
             "🔐 Nếu là tài khoản, vui lòng *đổi mật khẩu ngay* sau khi đăng nhập."
         ),
         parse_mode="Markdown",

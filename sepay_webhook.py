@@ -533,6 +533,15 @@ async def send_delivery_message(user_id: int, order_id: str, stock_code: str, qt
     bio.name = f"{order_id}.txt"
     bio.seek(0)
 
+    try:
+        from bot_shop import file_delivery_line, usage_guide_line_for_stock
+
+        usage_guide_line = await usage_guide_line_for_stock(stock_code)
+        guide_or_file_line = usage_guide_line or file_delivery_line()
+    except Exception as e:
+        logger.warning("load usage guide failed (stock=%s): %s", stock_code, e)
+        guide_or_file_line = "📄 File .txt chứa đầy đủ thông tin ở đây (bấm để tải & copy nhanh)."
+
     # 1) GỬI FILE TRƯỚC (KHÔNG caption, KHÔNG parse_mode) => cực ổn định
     try:
         caption_doc = (
@@ -540,7 +549,7 @@ async def send_delivery_message(user_id: int, order_id: str, stock_code: str, qt
             f"🧾 Mã đơn: `{order_id}`\n\n"
             f"📦 SP: `{stock_code}`\n\n"
             f"🔢 SL: *{qty}*\n\n\n"
-            "📄 File .txt chứa đầy đủ thông tin ở đây (bấm để tải & copy nhanh).\n\n"
+            f"{guide_or_file_line}\n\n"
             "🔐 Nếu là tài khoản, vui lòng đổi mật khẩu ngay sau khi đăng nhập.\n\n"
             "❗ Nếu tài khoản lỗi/không đăng nhập được hoặc có vấn đề, hãy bấm *Hỗ trợ* bên dưới."
 )

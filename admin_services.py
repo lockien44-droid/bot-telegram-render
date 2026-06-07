@@ -41,6 +41,16 @@ def _headers(ws) -> Dict[str, int]:
     return shop.headers_map(ws) if ws else {}
 
 
+def _ensure_headers(ws, required: List[str]) -> Dict[str, int]:
+    headers = _headers(ws)
+    missing = [h for h in required if h.lower() not in headers]
+    if missing:
+        for offset, header in enumerate(missing, start=1):
+            ws.update_cell(1, len(headers) + offset, header)
+        headers = _headers(ws)
+    return headers
+
+
 def _row_from_headers(headers: Dict[str, int], data: Dict[str, Any]) -> List[str]:
     row = [""] * len(headers)
     for key, value in data.items():
@@ -142,6 +152,7 @@ def snapshot(limit: int = 100, pool_limit: int = 2000, reveal_secrets: bool = Fa
             "stock_code": code,
             "price": product.get("price", 0),
             "description": product.get("description", ""),
+            "usage_guide": product.get("usage_guide", ""),
             **counts,
         })
 
@@ -217,7 +228,10 @@ def snapshot(limit: int = 100, pool_limit: int = 2000, reveal_secrets: bool = Fa
 
 def save_product(data: Dict[str, Any]) -> Dict[str, Any]:
     shop.init_sheets()
-    headers = _headers(shop._ws_products)
+    headers = _ensure_headers(
+        shop._ws_products,
+        ["product_id", "name", "stock_code", "price", "description", "usage_guide"],
+    )
     if not headers:
         raise RuntimeError("PRODUCTS thieu header")
 
@@ -237,6 +251,7 @@ def save_product(data: Dict[str, Any]) -> Dict[str, Any]:
         "stock_code": stock_code,
         "price": shop.normalize_int(data.get("price"), 0),
         "description": data.get("description", ""),
+        "usage_guide": data.get("usage_guide", ""),
     }
 
     values = shop._ws_products.get_all_values()

@@ -298,6 +298,7 @@ ADMIN_HTML = """<!doctype html>
         <input id="p_stock_code" placeholder="stock_code" />
         <input id="p_price" placeholder="Gia" type="number" />
         <textarea class="full" id="p_description" placeholder="Mo ta"></textarea>
+        <textarea class="full" id="p_usage_guide" placeholder="Huong dan su dung (link hoac noi dung)"></textarea>
         <button onclick="saveProduct()">Luu san pham</button>
       </div>
       <div class="scroll desktop-table mobile-switch"><table id="productsTable"></table></div>
@@ -374,7 +375,7 @@ function render(){
     ["Ready", s.stock_ready, "green"], ["Held", s.stock_held, "orange"], ["Sold", s.stock_sold, "blue"],
     ["Pending", c.PENDING||0, "orange"], ["Delivered", c.DELIVERED||0, "green"], ["Expired", c.EXPIRED||0, "red"], ["Cancelled", c.CANCELLED||0, "red"]
   ].map(([a,b,cls])=>`<div class="card"><div class="label">${a}</div><div class="value ${cls}">${b}</div></div>`).join("");
-  const productCols = ["product_id","name","stock_code","price","READY","HELD","SOLD","description"];
+  const productCols = ["product_id","name","stock_code","price","READY","HELD","SOLD","description","usage_guide"];
   const orderCols = ["order_id","user_id","stock_code","qty","total","status","created_at","paid_at","tx_id","delivered_at"];
   setTable("productsTableDash", DATA.products, productCols, true); setCards("productsCardsDash", DATA.products, productCols, fillProduct);
   setTable("ordersTableDash", DATA.orders, orderCols); setCards("ordersCardsDash", DATA.orders, orderCols);
@@ -403,6 +404,7 @@ function fillProduct(p){
   document.getElementById("p_stock_code").value = p.stock_code || "";
   document.getElementById("p_price").value = p.price || "";
   document.getElementById("p_description").value = p.description || "";
+  document.getElementById("p_usage_guide").value = p.usage_guide || "";
   window.scrollTo({top: 0, behavior: "smooth"});
 }
 async function saveProduct(){
@@ -413,6 +415,7 @@ async function saveProduct(){
       stock_code: document.getElementById("p_stock_code").value,
       price: document.getElementById("p_price").value,
       description: document.getElementById("p_description").value,
+      usage_guide: document.getElementById("p_usage_guide").value,
     })});
     msg("Da luu san pham."); await loadData();
   } catch(e) { msg(e.message); }

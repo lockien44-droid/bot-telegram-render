@@ -30,7 +30,7 @@ interface Props {
   onAddStock?: (stockCode: string) => void;
 }
 
-const EMPTY = { product_id: "", name: "", stock_code: "", price: "", description: "" };
+const EMPTY = { product_id: "", name: "", stock_code: "", price: "", description: "", usage_guide: "" };
 
 export function Products({ data, adminKey, refresh, embedded, onAddStock }: Props) {
   const [modalOpen, setModalOpen] = useState(false);
@@ -124,6 +124,7 @@ export function Products({ data, adminKey, refresh, embedded, onAddStock }: Prop
       stock_code: text(p.stock_code) === "—" ? "" : text(p.stock_code),
       price: String(p.price || ""),
       description: text(p.description) === "—" ? "" : text(p.description),
+      usage_guide: text(p.usage_guide) === "—" ? "" : text(p.usage_guide),
     });
     setModalOpen(true);
   };
@@ -218,6 +219,7 @@ export function Products({ data, adminKey, refresh, embedded, onAddStock }: Prop
                 <TableHead className="text-center">HELD</TableHead>
                 <TableHead className="text-center">SOLD</TableHead>
                 <TableHead>Mô tả</TableHead>
+                <TableHead>Hướng dẫn</TableHead>
                 <TableHead className="text-center w-[88px]">Thao tác</TableHead>
               </TableRow>
             </TableHeader>
@@ -235,6 +237,7 @@ export function Products({ data, adminKey, refresh, embedded, onAddStock }: Prop
                   <TableCell className="text-center"><Badge variant={Number(p.HELD) > 0 ? "secondary" : "outline"}>{p.HELD || 0}</Badge></TableCell>
                   <TableCell className="text-center"><Badge variant="outline">{p.SOLD || 0}</Badge></TableCell>
                   <TableCell className="text-sm text-muted-foreground max-w-[220px] truncate">{text(p.description)}</TableCell>
+                  <TableCell className="text-sm text-muted-foreground max-w-[240px] truncate">{text(p.usage_guide)}</TableCell>
                   <TableCell className="text-center" onClick={(e) => e.stopPropagation()}>
                     <div className="flex items-center justify-center gap-0.5">
                       <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(p)} title="Sửa">
@@ -253,7 +256,7 @@ export function Products({ data, adminKey, refresh, embedded, onAddStock }: Prop
                   </TableCell>
                 </TableRow>
               ))}
-              {products.length === 0 && <TableRow><TableCell colSpan={8} className="text-center text-muted-foreground py-8">Chưa có sản phẩm</TableCell></TableRow>}
+              {products.length === 0 && <TableRow><TableCell colSpan={9} className="text-center text-muted-foreground py-8">Chưa có sản phẩm</TableCell></TableRow>}
             </TableBody>
           </Table>
         </CardContent>
@@ -268,6 +271,7 @@ export function Products({ data, adminKey, refresh, embedded, onAddStock }: Prop
             <div className="space-y-1"><Label>Stock Code</Label><Input value={form.stock_code} onChange={(e) => setForm({ ...form, stock_code: e.target.value.toUpperCase() })} /></div>
             <div className="space-y-1"><Label>Giá</Label><Input type="number" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} /></div>
             <div className="space-y-1"><Label>Mô tả</Label><Input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></div>
+            <div className="space-y-1"><Label>Hướng dẫn sử dụng</Label><Textarea value={form.usage_guide} onChange={(e) => setForm({ ...form, usage_guide: e.target.value })} placeholder="Ví dụ: https://docs.google.com/document/d/..." /></div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setModalOpen(false)}>Hủy</Button>
