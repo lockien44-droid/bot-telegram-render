@@ -1918,7 +1918,8 @@ def _category_menu_button(category_key: str, products: List[Dict[str, Any]], sto
     total_ready = sum(stock_ready.get(p.get("stock_code", ""), 0) for p in products)
     label = SHOP_CATEGORY_LABELS.get(category_key, category_key.upper())
     if total_ready <= 0:
-        label = f"❌ {label}"
+        fb = EMOJI_FALLBACKS.get(category_key, "📦")
+        return InlineKeyboardButton(f"❌ {fb} {label}", callback_data=f"cat|{category_key}")
     emoji_id = get_emoji_id(category_key)
     if emoji_id:
         try:
