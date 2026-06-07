@@ -34,6 +34,7 @@ EMOJI_IDS: dict[str, str] = {
     "capcut": "5364339557712020484",
     "kiro": "5334678011054669335",
     "spotify": "5796304385973686816",
+    "refresh": os.getenv("CUSTOM_EMOJI_REFRESH_ID", "5373310679241466020").strip(),
 }
 
 EMOJI_FALLBACKS: dict[str, str] = {
@@ -45,6 +46,7 @@ EMOJI_FALLBACKS: dict[str, str] = {
     "capcut": (os.getenv("CUSTOM_EMOJI_CAPCUT_FALLBACK", "🎬") or "🎬").strip(),
     "kiro": (os.getenv("CUSTOM_EMOJI_KIRO_FALLBACK", "🪐") or "🪐").strip(),
     "spotify": (os.getenv("CUSTOM_EMOJI_SPOTIFY_FALLBACK", "🎧") or "🎧").strip(),
+    "refresh": (os.getenv("CUSTOM_EMOJI_REFRESH_FALLBACK", "✨") or "✨").strip(),
 }
 
 # Tiền tố trước icon GPT (để trống = chỉ hiện custom emoji, không thêm 🏷️).

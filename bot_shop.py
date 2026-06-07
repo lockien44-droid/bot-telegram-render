@@ -1979,6 +1979,22 @@ def _category_menu_button(category_key: str, products: List[Dict[str, Any]], sto
     return InlineKeyboardButton(f"{fb} {label}", callback_data=f"cat|{category_key}")
 
 
+def _refresh_menu_button(callback_data: str) -> InlineKeyboardButton:
+    emoji_id = get_emoji_id("refresh")
+    if emoji_id:
+        try:
+            return InlineKeyboardButton(
+                text="Làm mới",
+                callback_data=callback_data,
+                icon_custom_emoji_id=emoji_id,
+            )
+        except TypeError:
+            logger.warning("icon_custom_emoji_id không hỗ trợ — nâng python-telegram-bot lên 22.7+")
+        except Exception as e:
+            logger.warning("refresh icon_custom_emoji_id failed: %s", e)
+    return InlineKeyboardButton(f"{EMOJI_FALLBACKS.get('refresh', '✨')} Làm mới", callback_data=callback_data)
+
+
 def build_shop_menu_kb(
     products: List[Dict[str, Any]],
     stock_ready: Dict[str, int],
@@ -2012,7 +2028,7 @@ def build_shop_menu_kb(
         price_text = fmt_price_menu(p["price"])
         buttons.append([_product_menu_button(p, price_text, ready)])
 
-    buttons.append([InlineKeyboardButton("✨ Làm mới", callback_data="refresh_shop")])
+    buttons.append([_refresh_menu_button("refresh_shop")])
     return InlineKeyboardMarkup(buttons)
 
 
@@ -2076,7 +2092,7 @@ def build_category_menu_kb(
         price_text = fmt_price_menu(p["price"])
         buttons.append([_product_menu_button(p, price_text, ready)])
     buttons.append([InlineKeyboardButton("⬅️ Quay lại danh mục", callback_data="back_products")])
-    buttons.append([InlineKeyboardButton("✨ Làm mới", callback_data=f"cat_refresh|{category_key}")])
+    buttons.append([_refresh_menu_button(f"cat_refresh|{category_key}")])
     return InlineKeyboardMarkup(buttons)
 
 
