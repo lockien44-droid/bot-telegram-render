@@ -1,7 +1,9 @@
 import logging
 import os
 import random
+import re
 import string
+import unicodedata
 from typing import Any, Dict, List, Optional
 
 from gspread.cell import Cell
@@ -63,6 +65,13 @@ def _row_from_headers(headers: Dict[str, int], data: Dict[str, Any]) -> List[str
 def _make_item_id(stock_code: str) -> str:
     suffix = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
     return f"{stock_code.strip().upper()}-{shop.now_dt().strftime('%Y%m%d%H%M%S')}-{suffix}"
+
+
+def _stock_code_from_name(name: str) -> str:
+    normalized = unicodedata.normalize("NFKD", name or "")
+    ascii_name = normalized.encode("ascii", "ignore").decode("ascii")
+    code = re.sub(r"[^A-Za-z0-9]+", "", ascii_name).upper()
+    return code[:24] or f"SP{shop.now_dt().strftime('%Y%m%d%H%M%S')}"
 
 
 def _revenue_period_stats(orders: List[Dict[str, Any]]) -> Dict[str, Dict[str, int]]:
@@ -237,12 +246,14 @@ def save_product(data: Dict[str, Any]) -> Dict[str, Any]:
         raise RuntimeError("PRODUCTS thieu header")
 
     product_id = (data.get("product_id") or "").strip()
-    stock_code = shop.normalize_stock_code(data.get("stock_code") or "")
     name = (data.get("name") or "").strip()
+    stock_code = shop.normalize_stock_code(data.get("stock_code") or "")
+    if not stock_code and name:
+        stock_code = shop.normalize_stock_code(_stock_code_from_name(name))
     if not product_id:
         product_id = stock_code or f"P{shop.now_dt().strftime('%Y%m%d%H%M%S')}"
-    if not stock_code or not name:
-        raise ValueError("Can co name va stock_code")
+    if not name:
+        raise ValueError("Can co name")
     if shop.normalize_int(data.get("price"), 0) <= 0:
         raise ValueError("Gia phai > 0")
 

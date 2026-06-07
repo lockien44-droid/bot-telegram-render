@@ -295,7 +295,7 @@ ADMIN_HTML = """<!doctype html>
       <div class="panel-card form">
         <input id="p_product_id" placeholder="product_id (bo trong se tu tao)" />
         <input id="p_name" placeholder="Ten san pham" />
-        <input id="p_stock_code" placeholder="stock_code" />
+        <input id="p_stock_code" placeholder="stock_code (bo trong tu tao theo ten)" />
         <input id="p_price" placeholder="Gia" type="number" />
         <input id="p_category" placeholder="Danh muc" />
         <textarea class="full" id="p_description" placeholder="Mo ta"></textarea>

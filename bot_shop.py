@@ -1934,6 +1934,17 @@ def product_category_key(p: Dict[str, Any]) -> str:
     explicit = normalize_category_key(p.get("category"))
     if explicit:
         return explicit
+    name_key = (p.get("name") or "").lower().replace(" ", "")
+    if "gpt" in name_key or "chatgpt" in name_key or "openai" in name_key:
+        return "chatgpt"
+    if "365" in name_key or "ms365" in name_key or "office" in name_key or "microsoft" in name_key:
+        return "ms365"
+    if "capcut" in name_key:
+        return "capcut"
+    if "kiro" in name_key:
+        return "kiro"
+    if "spotify" in name_key:
+        return "spotify"
     key = product_custom_emoji_key(p.get("name", ""))
     return key if key in SHOP_CATEGORY_LABELS else ""
 

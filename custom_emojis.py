@@ -26,7 +26,7 @@ except Exception:  # pragma: no cover
 
 
 EMOJI_IDS: dict[str, str] = {
-    "chatgpt": "5359726582447487916",
+    "chatgpt": os.getenv("CUSTOM_EMOJI_CHATGPT_ID", "").strip(),
     "ms365": "5370857634440170316",
     "elevenlabs": "5373310679241466020",
     "telegram": "5330237710655306682",
@@ -37,7 +37,7 @@ EMOJI_IDS: dict[str, str] = {
 }
 
 EMOJI_FALLBACKS: dict[str, str] = {
-    "chatgpt": (os.getenv("CUSTOM_EMOJI_CHATGPT_FALLBACK", "📱") or "📱").strip(),
+    "chatgpt": (os.getenv("CUSTOM_EMOJI_CHATGPT_FALLBACK", "🤖") or "🤖").strip(),
     "ms365": (os.getenv("CUSTOM_EMOJI_MS365_FALLBACK", "📱") or "📱").strip(),
     "elevenlabs": (os.getenv("CUSTOM_EMOJI_ELEVENLABS_FALLBACK", "🌀") or "🌀").strip(),
     "telegram": (os.getenv("CUSTOM_EMOJI_TELEGRAM_FALLBACK", "📱") or "📱").strip(),
@@ -160,7 +160,7 @@ def product_custom_icon_html(name: str) -> Optional[str]:
 
 def chatgpt_icon_html() -> str:
     """Custom emoji ChatGPT (HTML ``<tg-emoji>``)."""
-    return product_custom_icon_html_by_key("chatgpt") or "📱 "
+    return product_custom_icon_html_by_key("chatgpt") or "🤖 "
 
 
 def strip_tg_emoji_html(text: str) -> str:
@@ -201,7 +201,7 @@ def product_detail_gpt_entities(
     price = int(p.get("price") or 0)
 
     tag = GPT_PRODUCT_TAG_PREFIX
-    ph = EMOJI_FALLBACKS.get("chatgpt", "📱")
+    ph = EMOJI_FALLBACKS.get("chatgpt", "🤖")
     head = f"{tag}{ph} {name}"
     text = (
         f"{head}\n\n"
