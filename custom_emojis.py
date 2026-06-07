@@ -31,6 +31,9 @@ EMOJI_IDS: dict[str, str] = {
     "elevenlabs": "5373310679241466020",
     "telegram": "5330237710655306682",
     "zalo": "6246536783887076725",
+    "capcut": "5364339557712020484",
+    "kiro": "5334678011054669335",
+    "spotify": "5796304385973686816",
 }
 
 EMOJI_FALLBACKS: dict[str, str] = {
@@ -39,6 +42,9 @@ EMOJI_FALLBACKS: dict[str, str] = {
     "elevenlabs": (os.getenv("CUSTOM_EMOJI_ELEVENLABS_FALLBACK", "🌀") or "🌀").strip(),
     "telegram": (os.getenv("CUSTOM_EMOJI_TELEGRAM_FALLBACK", "📱") or "📱").strip(),
     "zalo": (os.getenv("CUSTOM_EMOJI_ZALO_FALLBACK", "😀") or "😀").strip(),
+    "capcut": (os.getenv("CUSTOM_EMOJI_CAPCUT_FALLBACK", "🎬") or "🎬").strip(),
+    "kiro": (os.getenv("CUSTOM_EMOJI_KIRO_FALLBACK", "🪐") or "🪐").strip(),
+    "spotify": (os.getenv("CUSTOM_EMOJI_SPOTIFY_FALLBACK", "🎧") or "🎧").strip(),
 }
 
 # Tiền tố trước icon GPT (để trống = chỉ hiện custom emoji, không thêm 🏷️).
@@ -101,6 +107,21 @@ def is_zalo_product_name(name: str) -> bool:
     return "zalo" in s
 
 
+def is_capcut_product_name(name: str) -> bool:
+    s = (name or "").lower().replace(" ", "")
+    return "capcut" in s
+
+
+def is_kiro_product_name(name: str) -> bool:
+    s = (name or "").lower().replace(" ", "")
+    return "kiro" in s
+
+
+def is_spotify_product_name(name: str) -> bool:
+    s = (name or "").lower().replace(" ", "")
+    return "spotify" in s
+
+
 def product_custom_emoji_key(name: str) -> Optional[str]:
     """Khóa registry custom emoji cho sản phẩm (``chatgpt``, ``ms365``, …) hoặc None."""
     if is_gpt_product_name(name) and get_emoji_id("chatgpt"):
@@ -113,6 +134,12 @@ def product_custom_emoji_key(name: str) -> Optional[str]:
         return "telegram"
     if is_zalo_product_name(name) and get_emoji_id("zalo"):
         return "zalo"
+    if is_capcut_product_name(name) and get_emoji_id("capcut"):
+        return "capcut"
+    if is_kiro_product_name(name) and get_emoji_id("kiro"):
+        return "kiro"
+    if is_spotify_product_name(name) and get_emoji_id("spotify"):
+        return "spotify"
     return None
 
 
@@ -260,6 +287,9 @@ __all__ = [
     "is_elevenlabs_product_name",
     "is_telegram_product_name",
     "is_zalo_product_name",
+    "is_capcut_product_name",
+    "is_kiro_product_name",
+    "is_spotify_product_name",
     "product_custom_emoji_key",
     "product_custom_icon_html",
     "product_custom_icon_html_by_key",
