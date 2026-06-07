@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Card, CardContent } from "../ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 import { Button } from "../ui/button";
@@ -30,7 +30,19 @@ interface Props {
   onAddStock?: (stockCode: string) => void;
 }
 
-const EMPTY = { product_id: "", name: "", stock_code: "", price: "", description: "", usage_guide: "" };
+const EMPTY = { product_id: "", name: "", stock_code: "", price: "", category: "", description: "", usage_guide: "" };
+
+function inferCategoryName(p: AnyRow): string {
+  const category = text(p.category);
+  if (category !== "—" && category.trim()) return category;
+  const hay = `${text(p.name)} ${text(p.stock_code)}`.toLowerCase().replace(/\s+/g, "");
+  if (hay.includes("capcut")) return "CAPCUT";
+  if (hay.includes("kiro")) return "KIRO";
+  if (hay.includes("spotify")) return "SPOTIFY";
+  if (hay.includes("chatgpt") || hay.includes("gpt") || hay.includes("openai")) return "CHATGPT";
+  if (hay.includes("ms365") || hay.includes("365") || hay.includes("office") || hay.includes("microsoft")) return "MICROSOFT";
+  return "";
+}
 
 export function Products({ data, adminKey, refresh, embedded, onAddStock }: Props) {
   const [modalOpen, setModalOpen] = useState(false);
@@ -123,6 +135,7 @@ export function Products({ data, adminKey, refresh, embedded, onAddStock }: Prop
       name: text(p.name) === "—" ? "" : text(p.name),
       stock_code: text(p.stock_code) === "—" ? "" : text(p.stock_code),
       price: String(p.price || ""),
+      category: inferCategoryName(p),
       description: text(p.description) === "—" ? "" : text(p.description),
       usage_guide: text(p.usage_guide) === "—" ? "" : text(p.usage_guide),
     });
@@ -173,6 +186,19 @@ export function Products({ data, adminKey, refresh, embedded, onAddStock }: Prop
   };
 
   const products = data?.products || [];
+  const categories = useMemo(() => {
+    const base = ["CAPCUT", "KIRO", "MICROSOFT", "CHATGPT", "SPOTIFY"];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const c of base.concat(products.map(inferCategoryName))) {
+      const val = c.trim();
+      const key = val.toLowerCase();
+      if (!val || seen.has(key)) continue;
+      seen.add(key);
+      out.push(val);
+    }
+    return out;
+  }, [products]);
 
   return (
     <div className="space-y-4">
@@ -199,7 +225,7 @@ export function Products({ data, adminKey, refresh, embedded, onAddStock }: Prop
           >
             <Megaphone size={15} /> {broadcasting ? "Đang gửi..." : "Cập nhật kho cho khách"}
           </Button>
-          <Button size="sm" className="gap-1.5" onClick={openAdd}><Plus size={15} /> Thêm sản phẩm</Button>
+          <Button size="sm" className="gap-1.5" onClick={openAdd}><Plus size={15} /> Thêm danh mục</Button>
         </div>
       </div>
 
@@ -213,6 +239,7 @@ export function Products({ data, adminKey, refresh, embedded, onAddStock }: Prop
             <TableHeader>
               <TableRow>
                 <TableHead>Tên sản phẩm</TableHead>
+                <TableHead>Danh mục</TableHead>
                 <TableHead>Stock Code</TableHead>
                 <TableHead className="text-right">Giá</TableHead>
                 <TableHead className="text-center">READY</TableHead>
@@ -231,6 +258,7 @@ export function Products({ data, adminKey, refresh, embedded, onAddStock }: Prop
                   onClick={() => onAddStock && openAddStock(p)}
                 >
                   <TableCell className="font-medium">{text(p.name)}</TableCell>
+                  <TableCell className="text-sm text-muted-foreground">{inferCategoryName(p) || "—"}</TableCell>
                   <TableCell><code className="bg-muted px-1.5 py-0.5 rounded text-xs">{text(p.stock_code)}</code></TableCell>
                   <TableCell className="text-right text-emerald-700">{money(p.price)}</TableCell>
                   <TableCell className="text-center"><Badge variant={Number(p.READY) > 0 ? "default" : "destructive"}>{p.READY || 0}</Badge></TableCell>
@@ -256,7 +284,7 @@ export function Products({ data, adminKey, refresh, embedded, onAddStock }: Prop
                   </TableCell>
                 </TableRow>
               ))}
-              {products.length === 0 && <TableRow><TableCell colSpan={9} className="text-center text-muted-foreground py-8">Chưa có sản phẩm</TableCell></TableRow>}
+              {products.length === 0 && <TableRow><TableCell colSpan={10} className="text-center text-muted-foreground py-8">Chưa có sản phẩm</TableCell></TableRow>}
             </TableBody>
           </Table>
         </CardContent>
@@ -264,9 +292,21 @@ export function Products({ data, adminKey, refresh, embedded, onAddStock }: Prop
 
       <Dialog open={modalOpen} onOpenChange={setModalOpen}>
         <DialogContent className="max-w-md">
-          <DialogHeader><DialogTitle>{form.product_id ? "Sửa sản phẩm" : "Thêm sản phẩm"}</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{form.product_id ? "Sửa sản phẩm" : "Thêm danh mục"}</DialogTitle></DialogHeader>
           <div className="space-y-3 py-2">
             <div className="space-y-1"><Label>Product ID</Label><Input value={form.product_id} onChange={(e) => setForm({ ...form, product_id: e.target.value })} placeholder="Bỏ trống để tự tạo" /></div>
+            <div className="space-y-1">
+              <Label>Danh mục</Label>
+              <Input
+                list="product-category-options"
+                value={form.category}
+                onChange={(e) => setForm({ ...form, category: e.target.value })}
+                placeholder="Nhập danh mục mới hoặc chọn danh mục cũ"
+              />
+              <datalist id="product-category-options">
+                {categories.map((c) => <option key={c} value={c} />)}
+              </datalist>
+            </div>
             <div className="space-y-1"><Label>Tên sản phẩm</Label><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></div>
             <div className="space-y-1"><Label>Stock Code</Label><Input value={form.stock_code} onChange={(e) => setForm({ ...form, stock_code: e.target.value.toUpperCase() })} /></div>
             <div className="space-y-1"><Label>Giá</Label><Input type="number" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} /></div>
@@ -275,7 +315,7 @@ export function Products({ data, adminKey, refresh, embedded, onAddStock }: Prop
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setModalOpen(false)}>Hủy</Button>
-            <Button onClick={save} disabled={saving || !form.name || !form.stock_code}>{saving ? "Đang lưu..." : "Lưu"}</Button>
+            <Button onClick={save} disabled={saving || !form.category || !form.name || !form.stock_code}>{saving ? "Đang lưu..." : "Lưu"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -1185,6 +1185,7 @@ def load_products() -> List[Dict[str, Any]]:
         # ✅ lấy mô tả riêng từng sản phẩm (từ cột description)
         desc = (r.get("description") or "").strip()
         usage_guide = (r.get("usage_guide") or "").strip()
+        category = (r.get("category") or "").strip()
 
         if product_id and stock_code and name:
             out.append({
@@ -1192,6 +1193,7 @@ def load_products() -> List[Dict[str, Any]]:
                 "name": name,
                 "price": price,
                 "stock_code": stock_code,
+                "category": category,
                 "description": desc,   # ✅ thêm field
                 "usage_guide": usage_guide,
             })
@@ -1909,14 +1911,44 @@ SHOP_CATEGORY_LABELS = {
 SHOP_CATEGORY_ORDER = ["capcut", "kiro", "ms365", "chatgpt", "spotify"]
 
 
+def normalize_category_key(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return ""
+    key = re.sub(r"[^0-9a-z]+", "_", raw).strip("_")
+    aliases = {
+        "microsoft": "ms365",
+        "office": "ms365",
+        "office_365": "ms365",
+        "ms_365": "ms365",
+        "365": "ms365",
+        "cap_cut": "capcut",
+        "chat_gpt": "chatgpt",
+        "gpt": "chatgpt",
+    }
+    key = aliases.get(key, key)
+    return key[:48]
+
+
 def product_category_key(p: Dict[str, Any]) -> str:
+    explicit = normalize_category_key(p.get("category"))
+    if explicit:
+        return explicit
     key = product_custom_emoji_key(p.get("name", ""))
     return key if key in SHOP_CATEGORY_LABELS else ""
 
 
+def product_category_label(category_key: str, products: List[Dict[str, Any]]) -> str:
+    for p in products:
+        explicit = str(p.get("category") or "").strip()
+        if explicit and normalize_category_key(explicit) == category_key:
+            return explicit.upper()
+    return SHOP_CATEGORY_LABELS.get(category_key, category_key.upper())
+
+
 def _category_menu_button(category_key: str, products: List[Dict[str, Any]], stock_ready: Dict[str, int]) -> InlineKeyboardButton:
     total_ready = sum(stock_ready.get(p.get("stock_code", ""), 0) for p in products)
-    label = SHOP_CATEGORY_LABELS.get(category_key, category_key.upper())
+    label = product_category_label(category_key, products)
     if total_ready <= 0:
         fb = EMOJI_FALLBACKS.get(category_key, "📦")
         return InlineKeyboardButton(f"❌ {fb} {label}", callback_data=f"cat|{category_key}")
@@ -1955,6 +1987,8 @@ def build_shop_menu_kb(
     for key in SHOP_CATEGORY_ORDER:
         if key in grouped_keys:
             category_buttons.append(_category_menu_button(key, grouped[key], stock_ready))
+    for key in sorted(grouped_keys - set(SHOP_CATEGORY_ORDER), key=lambda k: product_category_label(k, grouped[k])):
+        category_buttons.append(_category_menu_button(key, grouped[key], stock_ready))
 
     for idx in range(0, len(category_buttons), 3):
         buttons.append(category_buttons[idx:idx + 3])
@@ -2011,7 +2045,7 @@ def build_products_menu_html() -> str:
 
 
 def build_category_menu_html(category_key: str, products: List[Dict[str, Any]]) -> str:
-    label = SHOP_CATEGORY_LABELS.get(category_key, category_key.upper())
+    label = product_category_label(category_key, products)
     icon = product_custom_icon_html_by_key(category_key) or f"{_html.escape(EMOJI_FALLBACKS.get(category_key, '📦'))} "
     return (
         f"{icon}<b>{_html.escape(label)}</b>\n\n"

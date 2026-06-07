@@ -151,6 +151,7 @@ def snapshot(limit: int = 100, pool_limit: int = 2000, reveal_secrets: bool = Fa
             "name": product.get("name", ""),
             "stock_code": code,
             "price": product.get("price", 0),
+            "category": product.get("category", ""),
             "description": product.get("description", ""),
             "usage_guide": product.get("usage_guide", ""),
             **counts,
@@ -230,7 +231,7 @@ def save_product(data: Dict[str, Any]) -> Dict[str, Any]:
     shop.init_sheets()
     headers = _ensure_headers(
         shop._ws_products,
-        ["product_id", "name", "stock_code", "price", "description", "usage_guide"],
+        ["product_id", "name", "stock_code", "price", "category", "description", "usage_guide"],
     )
     if not headers:
         raise RuntimeError("PRODUCTS thieu header")
@@ -250,6 +251,7 @@ def save_product(data: Dict[str, Any]) -> Dict[str, Any]:
         "name": name,
         "stock_code": stock_code,
         "price": shop.normalize_int(data.get("price"), 0),
+        "category": data.get("category", ""),
         "description": data.get("description", ""),
         "usage_guide": data.get("usage_guide", ""),
     }
