@@ -1878,13 +1878,25 @@ def _product_menu_button(p: Dict[str, Any], price_text: str, ready: int) -> Inli
     pname = p.get("name", "")
     pid = p["product_id"]
     cb = f"pdetail|{pid}"
-    if ready <= 0:
-        label = f"❌ {pname} - {price_text} (hết hàng)"
-        return InlineKeyboardButton(label, callback_data=cb)
-
-    label = f"{pname} - {price_text} (còn {ready})"
     emoji_key = product_custom_emoji_key(pname)
     emoji_id = get_emoji_id(emoji_key) if emoji_key else ""
+    if ready <= 0:
+        label = f"❌ {pname} - {price_text} (hết hàng)"
+        if emoji_id:
+            try:
+                return InlineKeyboardButton(
+                    text=label,
+                    callback_data=cb,
+                    icon_custom_emoji_id=emoji_id,
+                )
+            except TypeError:
+                logger.warning("icon_custom_emoji_id không hỗ trợ — nâng python-telegram-bot lên 22.7+")
+            except Exception as e:
+                logger.warning("sold-out InlineKeyboardButton icon_custom_emoji_id failed: %s", e)
+        fb = EMOJI_FALLBACKS.get(emoji_key, product_icon(pname)) if emoji_key else product_icon(pname)
+        return InlineKeyboardButton(f"❌ {fb} {pname} - {price_text} (hết hàng)", callback_data=cb)
+
+    label = f"{pname} - {price_text} (còn {ready})"
     if emoji_id:
         try:
             return InlineKeyboardButton(
@@ -1960,10 +1972,21 @@ def product_category_label(category_key: str, products: List[Dict[str, Any]]) ->
 def _category_menu_button(category_key: str, products: List[Dict[str, Any]], stock_ready: Dict[str, int]) -> InlineKeyboardButton:
     total_ready = sum(stock_ready.get(p.get("stock_code", ""), 0) for p in products)
     label = product_category_label(category_key, products)
+    emoji_id = get_emoji_id(category_key)
     if total_ready <= 0:
+        if emoji_id:
+            try:
+                return InlineKeyboardButton(
+                    text=f"❌ {label}",
+                    callback_data=f"cat|{category_key}",
+                    icon_custom_emoji_id=emoji_id,
+                )
+            except TypeError:
+                logger.warning("icon_custom_emoji_id không hỗ trợ — nâng python-telegram-bot lên 22.7+")
+            except Exception as e:
+                logger.warning("sold-out category icon_custom_emoji_id failed: %s", e)
         fb = EMOJI_FALLBACKS.get(category_key, "📦")
         return InlineKeyboardButton(f"❌ {fb} {label}", callback_data=f"cat|{category_key}")
-    emoji_id = get_emoji_id(category_key)
     if emoji_id:
         try:
             return InlineKeyboardButton(
