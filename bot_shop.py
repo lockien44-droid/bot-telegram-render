@@ -1903,10 +1903,10 @@ SHOP_CATEGORY_LABELS = {
     "kiro": "KIRO",
     "spotify": "SPOTIFY",
     "chatgpt": "CHATGPT",
-    "ms365": "OFFICE 365",
+    "ms365": "MICROSOFT",
 }
 
-SHOP_CATEGORY_ORDER = ["capcut", "kiro", "spotify", "chatgpt", "ms365"]
+SHOP_CATEGORY_ORDER = ["capcut", "kiro", "ms365", "chatgpt", "spotify"]
 
 
 def product_category_key(p: Dict[str, Any]) -> str:
@@ -1916,8 +1916,9 @@ def product_category_key(p: Dict[str, Any]) -> str:
 
 def _category_menu_button(category_key: str, products: List[Dict[str, Any]], stock_ready: Dict[str, int]) -> InlineKeyboardButton:
     total_ready = sum(stock_ready.get(p.get("stock_code", ""), 0) for p in products)
-    label = f"{SHOP_CATEGORY_LABELS.get(category_key, category_key.upper())} ({len(products)} loại"
-    label += f", còn {total_ready})" if total_ready > 0 else ", hết hàng)"
+    label = SHOP_CATEGORY_LABELS.get(category_key, category_key.upper())
+    if total_ready <= 0:
+        label = f"❌ {label}"
     emoji_id = get_emoji_id(category_key)
     if emoji_id:
         try:
@@ -1947,7 +1948,7 @@ def build_shop_menu_kb(
         if key:
             grouped.setdefault(key, []).append(p)
 
-    grouped_keys = {key for key, items in grouped.items() if len(items) > 1}
+    grouped_keys = set(grouped.keys())
 
     category_buttons: List[InlineKeyboardButton] = []
     for key in SHOP_CATEGORY_ORDER:
