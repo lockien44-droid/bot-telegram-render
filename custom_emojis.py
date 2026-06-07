@@ -26,7 +26,7 @@ except Exception:  # pragma: no cover
 
 
 EMOJI_IDS: dict[str, str] = {
-    "chatgpt": os.getenv("CUSTOM_EMOJI_CHATGPT_ID", "").strip(),
+    "chatgpt": os.getenv("CUSTOM_EMOJI_CHATGPT_ID", "5359726582447487916").strip(),
     "ms365": "5370857634440170316",
     "elevenlabs": "5373310679241466020",
     "telegram": "5330237710655306682",

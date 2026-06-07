@@ -2076,7 +2076,6 @@ def build_category_menu_html(category_key: str, products: List[Dict[str, Any]]) 
     icon = product_custom_icon_html_by_key(category_key) or f"{_html.escape(EMOJI_FALLBACKS.get(category_key, '📦'))} "
     return (
         f"{icon}<b>{_html.escape(label)}</b>\n\n"
-        f"📦 Có <b>{len(products)}</b> loại trong danh mục này.\n"
         "👇 Chọn loại bạn muốn mua:"
     )
 
