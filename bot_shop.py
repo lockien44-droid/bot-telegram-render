@@ -55,6 +55,7 @@ from custom_emojis import (
     get_emoji_id,
     product_custom_emoji_key,
     product_custom_icon_html,
+    product_custom_icon_html_by_key,
     strip_tg_emoji_html,
     tg_emoji,
 )
@@ -1897,13 +1898,68 @@ def _product_menu_button(p: Dict[str, Any], price_text: str, ready: int) -> Inli
     return InlineKeyboardButton(f"{fb} {label}", callback_data=cb)
 
 
+SHOP_CATEGORY_LABELS = {
+    "capcut": "CAPCUT",
+    "kiro": "KIRO",
+    "spotify": "SPOTIFY",
+    "chatgpt": "CHATGPT",
+    "ms365": "OFFICE 365",
+}
+
+SHOP_CATEGORY_ORDER = ["capcut", "kiro", "spotify", "chatgpt", "ms365"]
+
+
+def product_category_key(p: Dict[str, Any]) -> str:
+    key = product_custom_emoji_key(p.get("name", ""))
+    return key if key in SHOP_CATEGORY_LABELS else ""
+
+
+def _category_menu_button(category_key: str, products: List[Dict[str, Any]], stock_ready: Dict[str, int]) -> InlineKeyboardButton:
+    total_ready = sum(stock_ready.get(p.get("stock_code", ""), 0) for p in products)
+    label = f"{SHOP_CATEGORY_LABELS.get(category_key, category_key.upper())} ({len(products)} loại"
+    label += f", còn {total_ready})" if total_ready > 0 else ", hết hàng)"
+    emoji_id = get_emoji_id(category_key)
+    if emoji_id:
+        try:
+            return InlineKeyboardButton(
+                text=label,
+                callback_data=f"cat|{category_key}",
+                icon_custom_emoji_id=emoji_id,
+            )
+        except TypeError:
+            logger.warning("icon_custom_emoji_id không hỗ trợ — nâng python-telegram-bot lên 22.7+")
+        except Exception as e:
+            logger.warning("category icon_custom_emoji_id failed: %s", e)
+    fb = EMOJI_FALLBACKS.get(category_key, "📦")
+    return InlineKeyboardButton(f"{fb} {label}", callback_data=f"cat|{category_key}")
+
+
 def build_shop_menu_kb(
     products: List[Dict[str, Any]],
     stock_ready: Dict[str, int],
 ) -> InlineKeyboardMarkup:
     buttons: List[List[InlineKeyboardButton]] = []
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    grouped_keys: set[str] = set()
 
     for p in products:
+        key = product_category_key(p)
+        if key:
+            grouped.setdefault(key, []).append(p)
+
+    grouped_keys = {key for key, items in grouped.items() if len(items) > 1}
+
+    category_buttons: List[InlineKeyboardButton] = []
+    for key in SHOP_CATEGORY_ORDER:
+        if key in grouped_keys:
+            category_buttons.append(_category_menu_button(key, grouped[key], stock_ready))
+
+    for idx in range(0, len(category_buttons), 3):
+        buttons.append(category_buttons[idx:idx + 3])
+
+    for p in products:
+        if product_category_key(p) in grouped_keys:
+            continue
         sc = p["stock_code"]
         ready = stock_ready.get(sc, 0)
         price_text = fmt_price_menu(p["price"])
@@ -1937,7 +1993,7 @@ def build_shop_catalog_html() -> str:
     elif SUPPORT_ZALO:
         lines.append(f"{tg_emoji('zalo')} Zalo: {_html.escape(SUPPORT_ZALO)}")
 
-    lines.extend(["", "🛍️ Chọn sản phẩm để mua:"])
+    lines.extend(["", "⬇️ Vui lòng chọn danh mục/sản phẩm bên dưới.⬇️"])
     return "\n".join(lines)
 
 
@@ -1950,6 +2006,31 @@ def build_products_menu_kb(
 
 def build_products_menu_html() -> str:
     return build_shop_catalog_html()
+
+
+def build_category_menu_html(category_key: str, products: List[Dict[str, Any]]) -> str:
+    label = SHOP_CATEGORY_LABELS.get(category_key, category_key.upper())
+    icon = product_custom_icon_html_by_key(category_key) or f"{_html.escape(EMOJI_FALLBACKS.get(category_key, '📦'))} "
+    return (
+        f"{icon}<b>{_html.escape(label)}</b>\n\n"
+        f"📦 Có <b>{len(products)}</b> loại trong danh mục này.\n"
+        "👇 Chọn loại bạn muốn mua:"
+    )
+
+
+def build_category_menu_kb(
+    category_key: str,
+    products: List[Dict[str, Any]],
+    stock_ready: Dict[str, int],
+) -> InlineKeyboardMarkup:
+    buttons: List[List[InlineKeyboardButton]] = []
+    for p in products:
+        ready = stock_ready.get(p["stock_code"], 0)
+        price_text = fmt_price_menu(p["price"])
+        buttons.append([_product_menu_button(p, price_text, ready)])
+    buttons.append([InlineKeyboardButton("⬅️ Quay lại danh mục", callback_data="back_products")])
+    buttons.append([InlineKeyboardButton("✨ Làm mới", callback_data=f"cat_refresh|{category_key}")])
+    return InlineKeyboardMarkup(buttons)
 
 
 async def _send_html_message(bot: Bot, chat_id: int, text: str, **kwargs):
@@ -2600,6 +2681,46 @@ async def show_shop_catalog(
 
 async def show_products(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     await show_shop_catalog(chat_id, context, force=True)
+
+
+async def show_product_category(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    category_key: str,
+    *,
+    force: bool = False,
+):
+    q = update.callback_query
+    await q.answer()
+
+    products, stock_ready = await refresh_catalog_cache(force=force)
+    category_products = [p for p in products if product_category_key(p) == category_key]
+    if not category_products:
+        return await q.edit_message_text("❌ Danh mục này chưa có sản phẩm.")
+
+    text = build_category_menu_html(category_key, category_products)
+    kb = build_category_menu_kb(category_key, category_products, stock_ready)
+
+    try:
+        await _edit_html_message(
+            q.message,
+            text,
+            reply_markup=kb,
+            disable_web_page_preview=True,
+        )
+    except Exception:
+        try:
+            await q.message.delete()
+        except Exception:
+            pass
+        await _send_html_message(
+            context.bot,
+            q.from_user.id,
+            text,
+            reply_markup=kb,
+            disable_web_page_preview=True,
+        )
+
 
 async def show_product_detail(update: Update, context: ContextTypes.DEFAULT_TYPE, pid: str):
     q = update.callback_query
@@ -4445,6 +4566,14 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
         return await show_products(q.from_user.id, context)
+
+    if data.startswith("cat|"):
+        category_key = data.split("|", 1)[1]
+        return await show_product_category(update, context, category_key)
+
+    if data.startswith("cat_refresh|"):
+        category_key = data.split("|", 1)[1]
+        return await show_product_category(update, context, category_key, force=True)
 
     if data.startswith("pdetail|"):
         pid = data.split("|", 1)[1]
