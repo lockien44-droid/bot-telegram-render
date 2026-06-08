@@ -1,21 +1,39 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Card, CardContent } from "../ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 import { Input } from "../ui/input";
-import { Users as UsersIcon, Search } from "lucide-react";
-import { money, text, type AdminSnapshot } from "../../api";
+import { Button } from "../ui/button";
+import { ArrowDownWideNarrow, ArrowUpNarrowWide, Search, Users as UsersIcon } from "lucide-react";
+import { money, text, type AdminSnapshot, type AnyRow } from "../../api";
 
 interface Props {
   data: AdminSnapshot | null;
 }
 
+type SpendSort = "default" | "desc" | "asc";
+
+const spentValue = (user: AnyRow) => Number(user.spent || 0);
+
 export function Users({ data }: Props) {
   const [search, setSearch] = useState("");
+  const [spendSort, setSpendSort] = useState<SpendSort>("default");
   const users = data?.users || [];
-  const visible = users.filter((u) => {
-    const hay = `${text(u.chat_id)} ${text(u.user_id)} ${text(u.username)} ${text(u.full_name)}`.toLowerCase();
-    return !search || hay.includes(search.toLowerCase());
-  });
+
+  const visible = useMemo(() => {
+    const filtered = users.filter((u) => {
+      const hay = `${text(u.chat_id)} ${text(u.user_id)} ${text(u.username)} ${text(u.full_name)}`.toLowerCase();
+      return !search || hay.includes(search.toLowerCase());
+    });
+    if (spendSort === "default") return filtered;
+    return [...filtered].sort((a, b) => {
+      const diff = spentValue(a) - spentValue(b);
+      return spendSort === "asc" ? diff : -diff;
+    });
+  }, [search, spendSort, users]);
+
+  const toggleSpendSort = (next: SpendSort) => {
+    setSpendSort((current) => (current === next ? "default" : next));
+  };
 
   return (
     <div className="space-y-4">
@@ -24,9 +42,31 @@ export function Users({ data }: Props) {
         <span className="text-sm text-muted-foreground">{users.length} người dùng đã bấm bot</span>
       </div>
 
-      <div className="relative max-w-xs">
-        <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
-        <Input className="pl-8" placeholder="User ID / username / tên" value={search} onChange={(e) => setSearch(e.target.value)} />
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative max-w-xs">
+          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+          <Input className="pl-8 w-64" placeholder="User ID / username / tên" value={search} onChange={(e) => setSearch(e.target.value)} />
+        </div>
+        <Button
+          type="button"
+          variant={spendSort === "desc" ? "secondary" : "outline"}
+          size="sm"
+          className="gap-1.5"
+          title="Sắp xếp tổng chi từ lớn đến bé"
+          onClick={() => toggleSpendSort("desc")}
+        >
+          <ArrowDownWideNarrow size={15} /> Tổng chi cao → thấp
+        </Button>
+        <Button
+          type="button"
+          variant={spendSort === "asc" ? "secondary" : "outline"}
+          size="sm"
+          className="gap-1.5"
+          title="Sắp xếp tổng chi từ bé đến lớn"
+          onClick={() => toggleSpendSort("asc")}
+        >
+          <ArrowUpNarrowWide size={15} /> Tổng chi thấp → cao
+        </Button>
       </div>
 
       <Card className="shadow-sm">
