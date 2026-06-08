@@ -21,6 +21,11 @@ interface Props {
 
 const ALL_STATUSES: OrderStatus[] = ["PENDING", "PAID", "DELIVERED", "EXPIRED", "CANCELLED"];
 
+const deliverySecretText = (item: AnyRow) => {
+  const value = text(item.secret || item.deliver_text || item.delivery_text || item.account || item.accounts);
+  return value === "—" ? "" : value;
+};
+
 export function Orders({ data, adminKey, refresh, preset }: Props) {
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState<OrderFilter>("ALL");
@@ -53,7 +58,7 @@ export function Orders({ data, adminKey, refresh, preset }: Props) {
     if (filterStatus === "FAILED" && !["EXPIRED", "CANCELLED"].includes(status)) return false;
     if (filterStatus !== "ALL" && filterStatus !== "FAILED" && status !== filterStatus) return false;
     const delivered = deliveryByOrder.get(text(o.order_id)) || [];
-    const deliveredText = delivered.map((item) => text(item.secret)).join(" ");
+    const deliveredText = delivered.map(deliverySecretText).join(" ");
     const hay = `${text(o.order_id)} ${text(o.user_id)} ${text(o.stock_code)} ${deliveredText}`.toLowerCase();
     return !search || hay.includes(search.toLowerCase());
   });
@@ -163,7 +168,7 @@ export function Orders({ data, adminKey, refresh, preset }: Props) {
 }
 
 function DeliverySecrets({ items }: { items: AnyRow[] }) {
-  const secrets = items.map((item) => text(item.secret)).filter((value) => value !== "—");
+  const secrets = items.map(deliverySecretText).filter(Boolean);
   if (!secrets.length) return <span className="text-xs text-muted-foreground">—</span>;
   const copyText = secrets.join("\n");
   return (

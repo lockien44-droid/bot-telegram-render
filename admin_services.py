@@ -177,23 +177,27 @@ def snapshot(limit: int = 100, pool_limit: int = 2000, reveal_secrets: bool = Fa
     user_rows.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
 
     delivery_rows = []
-    seen_delivery_orders = set()
+    delivery_orders_with_secret = set()
     for row in fulfillments:
-        delivery_rows.append(dict(row))
+        copy = dict(row)
+        delivery_rows.append(copy)
         oid = (row.get("order_id") or "").strip()
-        if oid:
-            seen_delivery_orders.add(oid)
+        secret = (row.get("secret") or row.get("deliver_text") or "").strip()
+        if oid and secret:
+            delivery_orders_with_secret.add(oid)
 
     for order in orders:
         oid = (order.get("order_id") or "").strip()
         status = (order.get("status") or "").strip().upper()
-        if not oid or oid in seen_delivery_orders or status != "DELIVERED":
+        deliver_text = (order.get("deliver_text") or "").strip()
+        if not oid or oid in delivery_orders_with_secret or status != "DELIVERED" or not deliver_text:
             continue
         delivery_rows.append({
             "order_id": oid,
             "item_id": "",
             "stock_code": order.get("stock_code", ""),
-            "secret": order.get("deliver_text", ""),
+            "secret": deliver_text,
+            "deliver_text": deliver_text,
             "delivered_at": order.get("delivered_at", ""),
             "user_id": order.get("user_id", ""),
             "qty": order.get("qty", ""),
