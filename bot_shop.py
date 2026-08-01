@@ -2116,7 +2116,13 @@ def build_category_menu_kb(
     stock_ready: Dict[str, int],
 ) -> InlineKeyboardMarkup:
     buttons: List[List[InlineKeyboardButton]] = []
-    for p in products:
+    # Hiển thị sản phẩm giá thấp trước; sort ổn định nên các sản phẩm
+    # cùng giá vẫn giữ nguyên thứ tự từ nguồn dữ liệu.
+    sorted_products = sorted(
+        products,
+        key=lambda item: normalize_int(item.get("price"), 0),
+    )
+    for p in sorted_products:
         ready = stock_ready.get(p["stock_code"], 0)
         price_text = fmt_price_menu(p["price"])
         buttons.append([_product_menu_button(p, price_text, ready)])
