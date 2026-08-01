@@ -2329,12 +2329,13 @@ _IRELAND_STREETS = (
     "St Brigid's Road", "Willow Court",
 )
 _IRELAND_LOCATIONS = (
-    ("Dublin", "County Dublin", ("D01", "D02", "D04", "D06", "D08", "D12")),
-    ("Cork", "County Cork", ("T12", "T23")),
-    ("Galway", "County Galway", ("H91",)),
-    ("Limerick", "County Limerick", ("V94",)),
-    ("Waterford", "County Waterford", ("X91",)),
-    ("Kilkenny", "County Kilkenny", ("R95",)),
+    (
+        "Dublin",
+        "County Dublin",
+        ("D01", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09",
+         "D10", "D11", "D12", "D13", "D14", "D15", "D16", "D17", "D18",
+         "D20", "D22", "D24"),
+    ),
 )
 _EIRCODE_CHARS = "ACDEFGHKNPRTVWXY0123456789"
 
