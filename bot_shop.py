@@ -1928,6 +1928,12 @@ def normalize_category_key(value: Any) -> str:
     if not raw:
         return ""
     key = re.sub(r"[^0-9a-z]+", "_", raw).strip("_")
+    # Tên danh mục trong dữ liệu có thể là nhãn dài như
+    # "TÀI KHOẢN CHAT GPT". Nhận diện theo từ khóa trước khi tra alias
+    # để danh mục vẫn dùng đúng custom emoji ChatGPT thay vì fallback 📦.
+    compact_key = key.replace("_", "")
+    if "chatgpt" in compact_key or "openai" in compact_key:
+        return "chatgpt"
     aliases = {
         "microsoft": "ms365",
         "office": "ms365",
