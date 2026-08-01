@@ -1754,10 +1754,11 @@ async def setup_bot_commands(application: Application) -> None:
     await bot.set_my_commands([
         BotCommand("start", "Menu chính"),
         BotCommand("support", "Hỗ trợ"),
+        BotCommand("gen", "Tạo địa chỉ Iceland"),
         BotCommand("2fa", "Lấy mã 2FA"),
         BotCommand("mail", "Đọc hòm thư"),
     ])
-    logger.info("✅ Đã cập nhật menu lệnh bot (/start, /support, /2fa, /mail)")
+    logger.info("✅ Đã cập nhật menu lệnh bot (/start, /support, /gen, /2fa, /mail)")
 
 
 
@@ -2312,6 +2313,84 @@ async def cmd_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_support(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_support(update.effective_user.id, context)
+
+
+_ICELAND_FIRST_NAMES = (
+    "Aron", "Baldur", "Einar", "Elías", "Jón", "Kristján", "Magnús", "Ólafur",
+    "Anna", "Elín", "Freyja", "Helga", "Katrín", "Lilja", "Sara", "Sigríður",
+)
+_ICELAND_LAST_NAMES = (
+    "Andersson", "Einarsson", "Guðmundsson", "Jónsson", "Kristjánsson", "Ólafsson",
+    "Andersdóttir", "Einarsdóttir", "Guðmundsdóttir", "Jónsdóttir", "Kristjánsdóttir", "Ólafsdóttir",
+)
+_ICELAND_STREETS = (
+    "Birkihlíð", "Fífulundur", "Hrafnsgata", "Lindarvegur", "Norðurbakki",
+    "Sóltún", "Vallargata", "Álftaholt", "Þingás", "Öspulundur",
+)
+_ICELAND_LOCATIONS = (
+    ("Reykjavík", "Höfuðborgarsvæðið", ("101", "103", "104", "105", "107", "108", "109", "110")),
+    ("Kópavogur", "Höfuðborgarsvæðið", ("200", "201", "203")),
+    ("Hafnarfjörður", "Höfuðborgarsvæðið", ("220", "221")),
+    ("Akureyri", "Norðurland eystra", ("600", "603")),
+    ("Keflavík", "Suðurnes", ("230",)),
+    ("Selfoss", "Suðurland", ("800",)),
+)
+
+
+def _generate_iceland_address() -> Dict[str, str]:
+    """Tạo hồ sơ địa chỉ Iceland giả lập, nhất quán thành phố/vùng/mã bưu điện."""
+    city, region, postcodes = random.choice(_ICELAND_LOCATIONS)
+    return {
+        "Họ": random.choice(_ICELAND_LAST_NAMES),
+        "Tên": random.choice(_ICELAND_FIRST_NAMES),
+        "Địa chỉ": f"{random.choice(_ICELAND_STREETS)} {random.randint(1, 98)}",
+        "Phòng hoặc căn hộ": "",
+        "T.phố": city,
+        "Hạt": region,
+        "Mã bưu điện": random.choice(postcodes),
+        "Quốc gia": "Iceland",
+    }
+
+
+def _iceland_address_keyboard(address: Dict[str, str]) -> InlineKeyboardMarkup:
+    labels = (
+        ("Họ", "📋 Họ"), ("Tên", "📋 Tên"),
+        ("Địa chỉ", "📋 Địa chỉ"), ("T.phố", "📋 Thành phố"),
+        ("Hạt", "📋 Hạt"), ("Mã bưu điện", "📋 Mã bưu điện"),
+        ("Quốc gia", "📋 Quốc gia"),
+    )
+    usable = [
+        button for key, label in labels
+        if (button := _copy_code_button(address[key], label)) is not None
+    ]
+    rows = [usable[i:i + 2] for i in range(0, len(usable), 2)]
+    rows.append([InlineKeyboardButton("🔄 Tạo địa chỉ khác", callback_data="gen_iceland")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def send_iceland_address(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    address = _generate_iceland_address()
+    text = (
+        "🇮🇸 <b>ĐỊA CHỈ ICELAND GIẢ LẬP</b>\n\n"
+        f"Họ: <code>{_html.escape(address['Họ'])}</code>\n"
+        f"Tên: <code>{_html.escape(address['Tên'])}</code>\n"
+        f"Địa chỉ: <code>{_html.escape(address['Địa chỉ'])}</code>\n"
+        "Phòng hoặc căn hộ: \n"
+        f"T.phố: <code>{_html.escape(address['T.phố'])}</code>\n"
+        f"Hạt: <code>{_html.escape(address['Hạt'])}</code>\n"
+        f"Mã bưu điện: <code>{_html.escape(address['Mã bưu điện'])}</code>\n"
+        f"Quốc gia: <code>{_html.escape(address['Quốc gia'])}</code>"
+    )
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=_iceland_address_keyboard(address),
+    )
+
+
+async def cmd_gen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await send_iceland_address(update.effective_chat.id, context)
 
 
 async def cmd_emojiid(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -4578,6 +4657,14 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     data = (q.data or "").strip()
 
+    if data == "gen_iceland":
+        await q.answer("Đã tạo địa chỉ mới")
+        try:
+            await q.message.delete()
+        except Exception:
+            pass
+        return await send_iceland_address(q.from_user.id, context)
+
     # ✅ NÚT NHANH: Đơn hàng / Hỗ trợ
     if data == "refresh_shop":
         await q.answer("🔄 Đang làm mới...")
@@ -4720,6 +4807,7 @@ def configure_application(app: Application) -> Application:
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("support", cmd_support))
+    app.add_handler(CommandHandler("gen", cmd_gen))
     # Lệnh ẩn (không có trong menu Telegram) — vẫn gõ được nếu admin/user biết
     app.add_handler(CommandHandler("shop", cmd_shop))
     app.add_handler(CommandHandler("orders", cmd_orders))
