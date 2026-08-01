@@ -1754,7 +1754,7 @@ async def setup_bot_commands(application: Application) -> None:
     await bot.set_my_commands([
         BotCommand("start", "Menu chính"),
         BotCommand("support", "Hỗ trợ"),
-        BotCommand("gen", "Tạo địa chỉ Iceland"),
+        BotCommand("gen", "Tạo địa chỉ Ireland"),
         BotCommand("2fa", "Lấy mã 2FA"),
         BotCommand("mail", "Đọc hòm thư"),
     ])
@@ -2315,44 +2315,48 @@ async def cmd_support(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_support(update.effective_user.id, context)
 
 
-_ICELAND_FIRST_NAMES = (
-    "Aron", "Baldur", "Einar", "Elías", "Jón", "Kristján", "Magnús", "Ólafur",
-    "Anna", "Elín", "Freyja", "Helga", "Katrín", "Lilja", "Sara", "Sigríður",
+_IRELAND_FIRST_NAMES = (
+    "Aidan", "Cian", "Conor", "Declan", "Finn", "Liam", "Oisín", "Ronan",
+    "Aoife", "Ciara", "Clodagh", "Maeve", "Niamh", "Orla", "Saoirse", "Siobhán",
 )
-_ICELAND_LAST_NAMES = (
-    "Andersson", "Einarsson", "Guðmundsson", "Jónsson", "Kristjánsson", "Ólafsson",
-    "Andersdóttir", "Einarsdóttir", "Guðmundsdóttir", "Jónsdóttir", "Kristjánsdóttir", "Ólafsdóttir",
+_IRELAND_LAST_NAMES = (
+    "Byrne", "Doyle", "Kelly", "Kennedy", "Lynch", "Murphy",
+    "O'Brien", "O'Connor", "O'Neill", "Quinn", "Ryan", "Walsh",
 )
-_ICELAND_STREETS = (
-    "Birkihlíð", "Fífulundur", "Hrafnsgata", "Lindarvegur", "Norðurbakki",
-    "Sóltún", "Vallargata", "Álftaholt", "Þingás", "Öspulundur",
+_IRELAND_STREETS = (
+    "Ashgrove Avenue", "Ballymore Road", "Cedar Park", "Harbour View",
+    "Hazelwood Drive", "Meadow Lane", "Oakfield Crescent", "Riverside Walk",
+    "St Brigid's Road", "Willow Court",
 )
-_ICELAND_LOCATIONS = (
-    ("Reykjavík", "Höfuðborgarsvæðið", ("101", "103", "104", "105", "107", "108", "109", "110")),
-    ("Kópavogur", "Höfuðborgarsvæðið", ("200", "201", "203")),
-    ("Hafnarfjörður", "Höfuðborgarsvæðið", ("220", "221")),
-    ("Akureyri", "Norðurland eystra", ("600", "603")),
-    ("Keflavík", "Suðurnes", ("230",)),
-    ("Selfoss", "Suðurland", ("800",)),
+_IRELAND_LOCATIONS = (
+    ("Dublin", "County Dublin", ("D01", "D02", "D04", "D06", "D08", "D12")),
+    ("Cork", "County Cork", ("T12", "T23")),
+    ("Galway", "County Galway", ("H91",)),
+    ("Limerick", "County Limerick", ("V94",)),
+    ("Waterford", "County Waterford", ("X91",)),
+    ("Kilkenny", "County Kilkenny", ("R95",)),
 )
+_EIRCODE_CHARS = "ACDEFGHKNPRTVWXY0123456789"
 
 
-def _generate_iceland_address() -> Dict[str, str]:
-    """Tạo hồ sơ địa chỉ Iceland giả lập, nhất quán thành phố/vùng/mã bưu điện."""
-    city, region, postcodes = random.choice(_ICELAND_LOCATIONS)
+def _generate_ireland_address() -> Dict[str, str]:
+    """Tạo hồ sơ Ireland giả lập, nhất quán thành phố/County/Eircode."""
+    city, county, routing_keys = random.choice(_IRELAND_LOCATIONS)
+    routing_key = random.choice(routing_keys)
+    unique_id = "".join(random.choice(_EIRCODE_CHARS) for _ in range(4))
     return {
-        "Họ": random.choice(_ICELAND_LAST_NAMES),
-        "Tên": random.choice(_ICELAND_FIRST_NAMES),
-        "Địa chỉ": f"{random.choice(_ICELAND_STREETS)} {random.randint(1, 98)}",
+        "Họ": random.choice(_IRELAND_LAST_NAMES),
+        "Tên": random.choice(_IRELAND_FIRST_NAMES),
+        "Địa chỉ": f"{random.randint(1, 98)} {random.choice(_IRELAND_STREETS)}",
         "Phòng hoặc căn hộ": "",
         "T.phố": city,
-        "Hạt": region,
-        "Mã bưu điện": random.choice(postcodes),
-        "Quốc gia": "Iceland",
+        "Hạt": county,
+        "Mã bưu điện": f"{routing_key} {unique_id}",
+        "Quốc gia": "Ireland",
     }
 
 
-def _iceland_address_keyboard(address: Dict[str, str]) -> InlineKeyboardMarkup:
+def _ireland_address_keyboard(address: Dict[str, str]) -> InlineKeyboardMarkup:
     labels = (
         ("Họ", "📋 Họ"), ("Tên", "📋 Tên"),
         ("Địa chỉ", "📋 Địa chỉ"), ("T.phố", "📋 Thành phố"),
@@ -2364,14 +2368,14 @@ def _iceland_address_keyboard(address: Dict[str, str]) -> InlineKeyboardMarkup:
         if (button := _copy_code_button(address[key], label)) is not None
     ]
     rows = [usable[i:i + 2] for i in range(0, len(usable), 2)]
-    rows.append([InlineKeyboardButton("🔄 Tạo địa chỉ khác", callback_data="gen_iceland")])
+    rows.append([InlineKeyboardButton("🔄 Tạo địa chỉ khác", callback_data="gen_ireland")])
     return InlineKeyboardMarkup(rows)
 
 
-async def send_iceland_address(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
-    address = _generate_iceland_address()
+async def send_ireland_address(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    address = _generate_ireland_address()
     text = (
-        "🇮🇸 <b>ĐỊA CHỈ ICELAND GIẢ LẬP</b>\n\n"
+        "🇮🇪 <b>ĐỊA CHỈ IRELAND GIẢ LẬP</b>\n\n"
         f"Họ: <code>{_html.escape(address['Họ'])}</code>\n"
         f"Tên: <code>{_html.escape(address['Tên'])}</code>\n"
         f"Địa chỉ: <code>{_html.escape(address['Địa chỉ'])}</code>\n"
@@ -2385,12 +2389,12 @@ async def send_iceland_address(chat_id: int, context: ContextTypes.DEFAULT_TYPE)
         chat_id=chat_id,
         text=text,
         parse_mode=ParseMode.HTML,
-        reply_markup=_iceland_address_keyboard(address),
+        reply_markup=_ireland_address_keyboard(address),
     )
 
 
 async def cmd_gen(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await send_iceland_address(update.effective_chat.id, context)
+    await send_ireland_address(update.effective_chat.id, context)
 
 
 async def cmd_emojiid(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -4657,13 +4661,13 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     data = (q.data or "").strip()
 
-    if data == "gen_iceland":
+    if data == "gen_ireland":
         await q.answer("Đã tạo địa chỉ mới")
         try:
             await q.message.delete()
         except Exception:
             pass
-        return await send_iceland_address(q.from_user.id, context)
+        return await send_ireland_address(q.from_user.id, context)
 
     # ✅ NÚT NHANH: Đơn hàng / Hỗ trợ
     if data == "refresh_shop":
