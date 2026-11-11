@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 import bot_shop as shop
+from reliability import serialized
 
 router = APIRouter(prefix="/api", tags=["shop"])
 
@@ -35,7 +36,7 @@ def _api_key_required() -> str:
 
 
 def _allow_anonymous_writes() -> bool:
-    return os.environ.get("SHOP_API_ALLOW_ANON", "").strip() == "1"
+    return os.environ.get("SHOP_API_ALLOW_ANON", "").strip() == "1" and not os.getenv("RENDER_EXTERNAL_URL")
 
 
 def require_api_key(x_api_key: str = Header(default="", alias="x-api-key")) -> None:
@@ -58,6 +59,7 @@ class CreateOrderBody(BaseModel):
     user_id: int
     stock_code: str
     qty: int = Field(ge=1, le=20)
+    request_id: str = Field(default="", max_length=200)
 
 
 class UserBody(BaseModel):
@@ -69,6 +71,7 @@ class UserBody(BaseModel):
 # ---- Public read endpoints (catalog) -------------------------------------
 
 @router.get("/products")
+@serialized
 def api_products() -> Dict[str, Any]:
     shop.init_sheets()
     return {
@@ -80,6 +83,7 @@ def api_products() -> Dict[str, Any]:
 # ---- Mutating endpoints (require API key) --------------------------------
 
 @router.post("/orders", dependencies=[Depends(require_api_key)])
+@serialized
 def api_create_order(body: CreateOrderBody) -> Dict[str, Any]:
     shop.init_sheets()
     stock_code = shop.normalize_stock_code(body.stock_code)
@@ -95,37 +99,16 @@ def api_create_order(body: CreateOrderBody) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail="Insufficient stock")
 
     order_id = shop.generate_order_id()
+    if body.request_id:
+        from operations import inbox
+        order_id = inbox().checkout_order_id(body.request_id, shop.generate_order_id)
     total = int(product["price"]) * body.qty
     created_at = shop.now_str()
 
-    reserved = shop.reserve_items_from_pool(
-        stock_code, body.qty, order_id, shop.ORDER_TTL_SECONDS
-    )
-    if len(reserved) < body.qty:
-        raise HTTPException(status_code=400, detail="Cannot reserve stock")
-
     try:
-        shop.append_order({
-            "order_id": order_id,
-            "user_id": body.user_id,
-            "stock_code": stock_code,
-            "qty": body.qty,
-            "total": total,
-            "status": "PENDING",
-            "qr_msg_id": "",
-            "paid_at": "",
-            "tx_id": "",
-            "delivered_at": "",
-            "deliver_text": "",
-            "created_at": created_at,
-        })
-    except Exception:
-        # Đền bù: trả lại các item đã giữ để khỏi sót HELD mồ côi
-        try:
-            shop.release_hold_by_order_sheet(order_id, "ROLLBACK")
-        except Exception:
-            pass
-        raise
+        shop.create_reserved_order(body.user_id, product, body.qty, order_id, created_at)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
     shop.append_dashboard_notification_row_sync(
         "new",
@@ -155,6 +138,7 @@ def api_create_order(body: CreateOrderBody) -> Dict[str, Any]:
 
 
 @router.get("/orders/{order_id}", dependencies=[Depends(require_api_key)])
+@serialized
 def api_get_order(order_id: str) -> Dict[str, Any]:
     shop.init_sheets()
     order = shop.get_order_sheet(order_id)
@@ -165,6 +149,7 @@ def api_get_order(order_id: str) -> Dict[str, Any]:
 
 
 @router.patch("/orders/{order_id}", dependencies=[Depends(require_api_key)])
+@serialized
 def api_patch_order(order_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
     shop.init_sheets()
     if not shop.get_order_sheet(order_id):
@@ -182,13 +167,18 @@ def api_patch_order(order_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @router.post("/orders/{order_id}/cancel", dependencies=[Depends(require_api_key)])
+@serialized
 def api_cancel_order(order_id: str) -> Dict[str, Any]:
     shop.init_sheets()
-    released = shop.release_hold_by_order_sheet(order_id, "CANCELLED")
+    try:
+        released = shop.release_hold_by_order_sheet(order_id, "CANCELLED")
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
     return {"ok": True, "released": released}
 
 
 @router.post("/users", dependencies=[Depends(require_api_key)])
+@serialized
 def api_upsert_user(body: UserBody) -> Dict[str, Any]:
     shop.init_sheets()
     shop.upsert_user_sheet(body.chat_id, body.username, body.full_name)
@@ -196,6 +186,7 @@ def api_upsert_user(body: UserBody) -> Dict[str, Any]:
 
 
 @router.get("/users/{user_id}/orders", dependencies=[Depends(require_api_key)])
+@serialized
 def api_user_orders(user_id: int, limit: int = 10) -> Dict[str, Any]:
     shop.init_sheets()
     capped = max(1, min(int(limit or 10), 50))

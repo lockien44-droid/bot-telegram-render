@@ -8,6 +8,7 @@ export type AdminSection =
   | "notifications"
   | "catalog"
   | "orders"
+  | "payment_reviews"
   | "users"
   | "reservations"
   | "fulfillments";
@@ -17,6 +18,7 @@ export const NAV_ITEMS: { id: AdminSection; label: string; icon: ReactNode }[] =
   { id: "revenue", label: "Doanh thu", icon: <DollarSign size={18} /> },
   { id: "notifications", label: "Thông báo", icon: <Bell size={18} /> },
   { id: "catalog", label: "Sản phẩm & Kho", icon: <Package size={18} /> },
+  { id: "payment_reviews", label: "Thanh toán cần xử lý", icon: <ClipboardList size={18} /> },
   { id: "orders", label: "Đơn hàng", icon: <ClipboardList size={18} /> },
   { id: "users", label: "Khách hàng", icon: <Users size={18} /> },
   { id: "reservations", label: "Giữ hàng", icon: <BookMarked size={18} /> },

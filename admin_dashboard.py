@@ -5,7 +5,9 @@ import secrets
 from typing import Any, Dict
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from admin_auth import COOKIE, check_login, create_session, require_session
+from reliability import serialized
 from fastapi.staticfiles import StaticFiles
 
 from admin_services import (
@@ -347,21 +349,24 @@ ADMIN_HTML = """<!doctype html>
 
 <script>
 let DATA = null;
-const saved = localStorage.getItem("admin_key") || "";
-document.getElementById("key").value = saved;
+localStorage.removeItem("admin_key");
+document.getElementById("key").value = "";
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
 const fmt = n => Number(n || 0).toLocaleString("vi-VN");
 const key = () => document.getElementById("key").value.trim();
 function msg(t){ document.getElementById("message").textContent = t; }
 function showTab(id, btn){ document.querySelectorAll(".panel").forEach(x=>x.classList.remove("active")); document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active")); document.getElementById(id).classList.add("active"); btn.classList.add("active"); }
 async function api(path, options={}){
-  const sep = path.includes("?") ? "&" : "?";
-  const res = await fetch(`${path}${sep}key=${encodeURIComponent(key())}`, {headers: {"content-type":"application/json"}, ...options});
+  if(key()) {
+    const login = await fetch("/admin/api/login", {method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({password:key()}), credentials:"same-origin"});
+    if(!login.ok) throw new Error("Dang nhap that bai");
+    document.getElementById("key").value = "";
+  }
+  const res = await fetch(path, {headers: {"content-type":"application/json"}, ...options, credentials:"same-origin"});
   if(!res.ok) throw new Error(await res.text());
   return res.json();
 }
 async function loadData(){
-  localStorage.setItem("admin_key", key());
   msg("Dang tai du lieu...");
   try {
     DATA = await api("/admin/api/snapshot?limit=150");
@@ -447,16 +452,7 @@ async function setOrderStatus(){
 
 
 def require_admin(request: Request) -> None:
-    expected = os.environ.get("ADMIN_PASSWORD", "").strip()
-    if not expected:
-        raise HTTPException(status_code=503, detail="Set ADMIN_PASSWORD in Render Environment first.")
-    provided = (
-        request.headers.get("x-admin-key")
-        or request.query_params.get("key")  # giữ tương thích cũ; nên gỡ sau khi FE chuyển hết
-        or ""
-    ).strip()
-    if not provided or not secrets.compare_digest(provided, expected):
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    require_session(request)
 
 
 def register_admin_routes(app: FastAPI) -> None:
@@ -473,32 +469,62 @@ def register_admin_routes(app: FastAPI) -> None:
             return FileResponse(fe_index)
         return ADMIN_HTML
 
-    @app.get("/admin/api/login")
+    @app.post("/admin/api/login")
     async def admin_login(request: Request):
+        data = await request.json()
+        if not isinstance(data, dict) or not isinstance(data.get("password"), str):
+            raise HTTPException(400, "Invalid login request")
+        check_login(request.client.host if request.client else "unknown", data["password"])
+        response = JSONResponse({"ok": True})
+        response.set_cookie(COOKIE, create_session(), max_age=8 * 3600, httponly=True,
+                            secure=request.url.scheme == "https" or bool(os.getenv("RENDER_EXTERNAL_URL")),
+                            samesite="strict", path="/admin")
+        return response
+
+    @app.post("/admin/api/logout")
+    async def admin_logout():
+        response = JSONResponse({"ok": True})
+        response.delete_cookie(COOKIE, path="/admin")
+        return response
+
+    @app.get("/admin/api/payment-reviews")
+    async def payment_reviews(request: Request):
         require_admin(request)
+        from operations import inbox
+        store = await asyncio.to_thread(inbox)
+        return {"items": await asyncio.to_thread(store.reviews)}
+
+    @app.post("/admin/api/payment-reviews/retry")
+    async def retry_payment_review(request: Request):
+        require_admin(request)
+        from operations import inbox
+        data = await request.json()
+        store = await asyncio.to_thread(inbox)
+        if not await asyncio.to_thread(store.retry, str(data.get("event_id", ""))):
+            raise HTTPException(404, "Review event not found")
         return {"ok": True}
 
     @app.get("/admin/api/notifications")
     async def admin_notifications_list(request: Request, limit: int = 200):
         require_admin(request)
-        return await asyncio.to_thread(notifications_list, limit)
+        return await asyncio.to_thread(serialized(notifications_list), limit)
 
     @app.post("/admin/api/notifications/read")
     async def admin_notifications_read(request: Request):
         require_admin(request)
         data: Dict[str, Any] = await request.json()
-        return await asyncio.to_thread(notifications_mark_read, data)
+        return await asyncio.to_thread(serialized(notifications_mark_read), data)
 
     @app.post("/admin/api/notifications/clear")
     async def admin_notifications_clear(request: Request):
         require_admin(request)
-        return await asyncio.to_thread(notifications_clear_all)
+        return await asyncio.to_thread(serialized(notifications_clear_all))
 
     @app.post("/admin/api/notifications/delete")
     async def admin_notifications_delete(request: Request):
         require_admin(request)
         data = await request.json()
-        return await asyncio.to_thread(notifications_delete, data)
+        return await asyncio.to_thread(serialized(notifications_delete), data)
 
     @app.get("/admin/api/snapshot")
     async def admin_snapshot(
@@ -508,7 +534,7 @@ def register_admin_routes(app: FastAPI) -> None:
         reveal_secrets: int = 0,
     ):
         require_admin(request)
-        return await asyncio.to_thread(snapshot, limit, pool_limit, bool(reveal_secrets))
+        return await asyncio.to_thread(serialized(snapshot), limit, pool_limit, bool(reveal_secrets))
 
     @app.post("/admin/api/backup")
     async def admin_backup(request: Request):
@@ -549,17 +575,17 @@ def register_admin_routes(app: FastAPI) -> None:
     @app.post("/admin/api/products")
     async def admin_save_product(request: Request):
         require_admin(request)
-        return await asyncio.to_thread(save_product, await request.json())
+        return await asyncio.to_thread(serialized(save_product), await request.json())
 
     @app.post("/admin/api/products/delete")
     async def admin_delete_product(request: Request):
         require_admin(request)
-        return await asyncio.to_thread(delete_product, await request.json())
+        return await asyncio.to_thread(serialized(delete_product), await request.json())
 
     @app.post("/admin/api/stock")
     async def admin_add_stock(request: Request):
         require_admin(request)
-        result = await asyncio.to_thread(add_stock, await request.json())
+        result = await asyncio.to_thread(serialized(add_stock), await request.json())
         added = int(result.get("added") or 0)
         stock_code = (result.get("stock_code") or "").strip()
         if added > 0 and stock_code:
@@ -576,14 +602,14 @@ def register_admin_routes(app: FastAPI) -> None:
     async def admin_release_order(request: Request):
         require_admin(request)
         data: Dict[str, Any] = await request.json()
-        return await asyncio.to_thread(release_order, data.get("order_id", ""), data.get("status", "EXPIRED"))
+        return await asyncio.to_thread(serialized(release_order), data.get("order_id", ""), data.get("status", "EXPIRED"))
 
     @app.post("/admin/api/stock/release-held")
     async def admin_release_holds(request: Request):
         require_admin(request)
         data: Dict[str, Any] = await request.json()
         return await asyncio.to_thread(
-            release_holds,
+            serialized(release_holds),
             bool(data.get("expired_only", True)),
             data.get("status", "EXPIRED"),
         )
@@ -593,7 +619,10 @@ def register_admin_routes(app: FastAPI) -> None:
         require_admin(request)
         data: Dict[str, Any] = await request.json()
         order_id = data.pop("order_id", "")
-        return await asyncio.to_thread(update_order, order_id, data)
+        try:
+            return await asyncio.to_thread(serialized(update_order), order_id, data)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc))
 
     @app.post("/admin/api/orders/reconcile-payment")
     async def admin_reconcile_payment(request: Request):
@@ -612,5 +641,6 @@ def register_admin_routes(app: FastAPI) -> None:
             "referenceCode": tx_id,
             "id": data.get("id") or 0,
         }
-        await process_payment(payload)
-        return {"ok": True, "order_id": order_id, "queued": False}
+        from operations import enqueue_event
+        await asyncio.to_thread(enqueue_event, "sepay", payload)
+        return {"ok": True, "order_id": order_id, "queued": True}

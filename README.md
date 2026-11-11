@@ -58,3 +58,52 @@ Uvicorn running on http://0.0.0.0:10000
 ## Bao mat
 
 Neu token bot hoac Google service account key da lo, tao token/key moi va cap nhat lai Render Environment.
+
+## Thanh toan, giao hang va phuc hoi
+
+- Webhook SePay chi tra thanh cong sau khi ghi su kien vao tab `BOT_EVENTS`.
+  Worker doc lai su kien chua xong sau restart va thu lai voi thoi gian cho tang dan.
+- Don di qua `PAID` -> `DELIVERY_PENDING` -> `DELIVERED`. Chi danh dau da giao sau khi Telegram gui file thanh cong.
+  Hang da cap duoc giu nguyen khi thu lai; khong lay them hang moi de gui lai.
+- Phai du so luong va secret hop le truoc khi danh dau hang SOLD. Sai tien, thieu hang,
+  giao dich khong ro don se vao dashboard **Thanh toan can xu ly** va bao admin neu da dat `ADMIN_IDS`.
+- Co khoa chung giua bot, webhook va API trong mot tien trinh. Khi con dung Sheets,
+  chay **mot instance, mot worker Uvicorn**. Khong tang replicas de mo rong tai.
+  Chuyen don/kho/su kien sang PostgreSQL voi transaction va unique constraint truoc khi chay nhieu instance.
+- Moi user mac dinh co toi da 2 don PENDING (`MAX_PENDING_PER_USER`), moi don toi da 20 item.
+  Cung callback/update tao don se dung lai ma don da luu; hang giu mo coi het han se duoc quet tra kho.
+- Telegram khong xoa update dang cho khi restart. Chi luu ID update da xu ly, khong luu noi dung mail/2FA vao ledger.
+
+Gioi han: Telegram khong cung cap idempotency key cho `send_document`. Neu gui thanh cong
+nhung mat ket noi truoc khi ghi trang thai, lan thu lai co the gui lai **cung file/cung hang**.
+Van can doi soat giao dich va theo doi muc can xu ly; khong cam ket exactly-once qua mang.
+Khong sua/xoa/sap xep dong trong `BOT_EVENTS` khi worker dang chay. Ledger va Sheets can duoc theo doi kich thuoc;
+chuyen database khi luong giao dich tang, khong coi khoa trong RAM la khoa phan tan.
+
+## Dang nhap dashboard
+
+Mat khau chi gui khi POST `/admin/api/login`. Backend tao cookie HttpOnly, SameSite=Strict,
+Secure tren Render, het han sau 8 gio. Khong luu mat khau vao sessionStorage va khong nhan `?key=`.
+Sau 6 lan sai trong 10 phut, IP bi gioi han thu lai. Doi `ADMIN_PASSWORD` se vo hieu hoa cac phien cu.
+Webhook Telegram luon co secret; neu khong dat `TELEGRAM_WEBHOOK_SECRET`, backend tu dan xuat secret tu BOT_TOKEN.
+
+## Backup Drive
+
+Backup hang ngay sau 03:00 theo `APP_TIMEZONE`, chay bu neu dich vu khoi dong muon.
+Thu muc mac dinh la ID trong `BACKUP_DRIVE_FOLDER_ID`; dat rong de tat backup tu dong len Drive.
+File `backup_slots.json` chua 14 file ZIP do chu tai khoan Drive so huu trong thu muc da chon.
+Service account cap nhat luan phien mot file moi ngay, tai lai va so checksum SHA-256.
+Cach nay khong can service account so huu file moi tren My Drive. Khong doi quyen chia se tu dong.
+Phai giu quyen Editor cua service account tren cac file nay. Thu muc Shared Drive khac
+co the duoc cau hinh bang `BACKUP_DRIVE_FOLDER_ID` (se tao ban ZIP moi neu khong co slot tuong ung).
+
+Backup thieu tab hoac upload/kiem tra loi se bi bao that bai va thu lai, khong bao thanh cong gia.
+Ban local giu theo `BACKUP_KEEP_DAYS` (mac dinh 14). 14 slot Drive giu toi da 14 ngay co backup;
+slot hom nay duoc ghi de sau 14 ngay. Backup chua thong tin kho, can gioi han nguoi truy cap thu muc.
+Khoi phuc chi khi da kiem tra ban backup va co yeu cau ro rang; khong tu dong ghi de Sheets nguon.
+
+## Kiem thu
+
+`python -m unittest test_reliability test_vietqr_local -v` chay kiem thu offline.
+`npm ci --prefix fe` va `npm run build --prefix fe` build dashboard.
+`/health` tra `release: reliability-v1` va kiem tra worker; `/ping` la kiem tra song don gian.

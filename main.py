@@ -1,7 +1,10 @@
 import asyncio
 import logging
 import os
+import re
 import secrets
+import hashlib
+import hmac
 import threading
 import time
 
@@ -16,6 +19,7 @@ from telegram import Update
 from admin_dashboard import register_admin_routes
 from shop_api import register_shop_api_routes
 from bot_shop import build_application, claim_telegram_update, setup_bot_commands
+from operations import enqueue_event, inbox, worker_loop
 from sepay_webhook import expire_scan_once, process_payment, set_telegram_bot, verify_sepay_auth
 
 logging.basicConfig(level=logging.INFO)
@@ -33,10 +37,28 @@ class _AccessLogFilter(logging.Filter):
         return not any(path in message for path in _QUIET_PATHS)
 
 
+class _SecretRedactionFilter(logging.Filter):
+    """Prevent Telegram bot tokens from leaking through dependency logs."""
+
+    _telegram_token = re.compile(r"(?i)(?:bot)?\d{6,}:[A-Za-z0-9_-]{20,}")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        redacted = self._telegram_token.sub("bot[REDACTED]", message)
+        if redacted != message:
+            record.msg = redacted
+            record.args = ()
+        return True
+
+
 logging.getLogger("uvicorn.access").addFilter(_AccessLogFilter())
+for _handler in logging.getLogger().handlers:
+    _handler.addFilter(_SecretRedactionFilter())
 
 app = FastAPI()
 telegram_app = None
+_operations_task = None
+_failed_updates = set()
 
 _PAYMENT_TASKS: set[asyncio.Task] = set()
 
@@ -66,7 +88,13 @@ def telegram_webhook_path() -> str:
 
 
 def telegram_webhook_secret() -> str:
-    return os.environ.get("TELEGRAM_WEBHOOK_SECRET", "").strip()
+    configured = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "").strip()
+    if configured:
+        return configured
+    token = os.environ.get("BOT_TOKEN", "").strip()
+    if not token:
+        raise RuntimeError("BOT_TOKEN is required to secure Telegram webhook")
+    return hmac.new(token.encode(), b"vm-store-telegram-webhook", hashlib.sha256).hexdigest()
 
 
 @app.post("/webhook/sepay")
@@ -75,13 +103,15 @@ async def sepay_webhook(request: Request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     try:
         payload = await request.json()
-        _track_task(asyncio.create_task(process_payment(payload)))
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "Expected JSON object")
+        await asyncio.to_thread(enqueue_event, "sepay", payload)
         return {"ok": True, "queued": True}
     except HTTPException:
         raise
     except Exception as e:
         logger.exception("sepay_webhook error")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=503, detail="Could not persist payment event; retry required")
 
 
 @app.post("/jobs/expire")
@@ -125,23 +155,32 @@ async def telegram_webhook(request: Request):
     update_id = payload.get("update_id")
     update = Update.de_json(payload, telegram_app.bot)
 
-    if _telegram_update_is_slow_broadcast(payload):
-
-        async def _process_broadcast_update() -> None:
-            try:
-                await telegram_app.process_update(update)
-            except Exception:
-                logger.exception("process_update (broadcast) failed update_id=%s", update_id)
-
-        _track_task(asyncio.create_task(_process_broadcast_update()))
-        return {"ok": True, "queued": True}
-
-    if update_id is not None and not await claim_telegram_update(int(update_id)):
-        logger.info("telegram_webhook: skip duplicate update_id=%s", update_id)
+    if not isinstance(update_id, int):
+        raise HTTPException(400, "Missing update_id")
+    store = await asyncio.to_thread(inbox)
+    if await asyncio.to_thread(store.telegram_done, update_id):
         return {"ok": True, "duplicate": True}
-
-    await telegram_app.process_update(update)
+    if not await claim_telegram_update(update_id):
+        # An in-flight attempt is not a completed receipt. Ask Telegram to retry.
+        raise HTTPException(503, "Update is being processed")
+    try:
+        await telegram_app.process_update(update)
+        if update_id in _failed_updates:
+            raise RuntimeError("Telegram handler failed")
+        await asyncio.to_thread(store.telegram_done, update_id, True)
+    except Exception:
+        import bot_shop as shop
+        shop._TELEGRAM_UPDATE_DEDUP.pop(update_id, None)
+        _failed_updates.discard(update_id)
+        logger.exception("Telegram update processing failed id=%s", update_id)
+        raise HTTPException(503, "Update failed; retry required")
     return {"ok": True}
+
+
+async def telegram_handler_error(update, context):
+    if update is not None:
+        _failed_updates.add(update.update_id)
+    logger.error("Telegram handler failed: %s", type(context.error).__name__)
 
 
 @app.get("/")
@@ -163,7 +202,7 @@ async def health():
     try:
         import bot_shop as _shop  # local import to avoid cold-start cost on /ping
 
-        _shop.init_sheets()
+        await asyncio.to_thread(_shop.init_sheets)
         if _shop._ws_orders is None:
             issues.append("sheets_not_ready")
     except Exception as e:
@@ -171,9 +210,13 @@ async def health():
 
     body = {
         "ok": not issues,
+        "release": "reliability-v1",
         "telegram": "webhook" if telegram_app else "polling",
         "ts": int(time.time()),
     }
+    if _operations_task is None or _operations_task.done():
+        issues.append("operations_worker_not_running")
+        body["ok"] = False
     if issues:
         body["issues"] = issues
         raise HTTPException(status_code=503, detail=body)
@@ -207,7 +250,7 @@ def run_bot():
         logger.info("Starting Telegram bot polling in background thread...")
         tg_app = build_application()
         set_telegram_bot(tg_app.bot)
-        tg_app.run_polling(drop_pending_updates=True, stop_signals=False)
+        tg_app.run_polling(drop_pending_updates=False, stop_signals=False)
     except Exception:
         logger.exception("Telegram bot crashed")
     finally:
@@ -216,7 +259,8 @@ def run_bot():
 
 @app.on_event("startup")
 async def startup_telegram_webhook():
-    global telegram_app
+    global telegram_app, _operations_task
+    _operations_task = asyncio.create_task(worker_loop())
     base_url = public_base_url()
     if not base_url:
         logger.info("No public URL configured; Telegram bot will use polling fallback.")
@@ -224,12 +268,13 @@ async def startup_telegram_webhook():
 
     webhook_url = f"{base_url}{telegram_webhook_path()}"
     telegram_app = build_application()
+    telegram_app.add_error_handler(telegram_handler_error)
     await telegram_app.initialize()
     set_telegram_bot(telegram_app.bot)
     await setup_bot_commands(telegram_app)
 
     secret = telegram_webhook_secret()
-    set_webhook_kwargs = {"url": webhook_url, "drop_pending_updates": True}
+    set_webhook_kwargs = {"url": webhook_url, "drop_pending_updates": False}
     if secret:
         set_webhook_kwargs["secret_token"] = secret
     await telegram_app.bot.set_webhook(**set_webhook_kwargs)
@@ -243,7 +288,11 @@ async def startup_telegram_webhook():
 
 @app.on_event("shutdown")
 async def shutdown_telegram_webhook():
-    global telegram_app
+    global telegram_app, _operations_task
+    if _operations_task:
+        _operations_task.cancel()
+        await asyncio.gather(_operations_task, return_exceptions=True)
+        _operations_task = None
 
     if _PAYMENT_TASKS:
         logger.info("Waiting for %d in-flight payment tasks...", len(_PAYMENT_TASKS))

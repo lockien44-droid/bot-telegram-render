@@ -11,7 +11,7 @@ export interface RevenueStats {
   year: RevenuePeriod;
 }
 
-export const PAID_STATUSES = new Set(["PAID", "DELIVERED"]);
+export const PAID_STATUSES = new Set(["PAID", "DELIVERY_PENDING", "DELIVERED"]);
 
 export type RevenuePeriodKey = "today" | "month" | "year" | "all";
 

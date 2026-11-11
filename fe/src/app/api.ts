@@ -44,10 +44,9 @@ export function setAdminUnauthorizedHandler(handler: (() => void) | null) {
 export async function adminApi<T>(path: string, key: string, options: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = {
     "content-type": "application/json",
-    "x-admin-key": key,
     ...(options.headers as Record<string, string> | undefined),
   };
-  const res = await fetch(path, { ...options, headers });
+  const res = await fetch(path, { ...options, headers, credentials: "same-origin" });
   if (res.status === 401) {
     onUnauthorized?.();
     throw new AdminUnauthorizedError();

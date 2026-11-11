@@ -6,11 +6,18 @@ import os
 import json
 import gzip
 import shutil
+import io
+import hashlib
+import secrets
+import zipfile
+from pathlib import Path
+from zoneinfo import ZoneInfo
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import gspread
 from google.oauth2.service_account import Credentials
 import logging
+from reliability import serialized
 
 
 class BackupManager:
@@ -54,6 +61,7 @@ class BackupManager:
             creds = Credentials.from_service_account_file(self.gsvc_json, scopes=scopes)
         
         self.gs_client = gspread.authorize(creds)
+        self.credentials = creds
         self.gs_sheet = self.gs_client.open_by_key(self.gsheet_id)
     
     def backup_sheet(self, sheet_name: str, compress: bool = True) -> str:
@@ -98,6 +106,7 @@ class BackupManager:
             self.logger.error(f"Failed to backup {sheet_name}: {e}")
             raise
     
+    @serialized
     def backup_all_sheets(self, compress: bool = True) -> List[str]:
         """
         Backup tất cả sheets
@@ -114,9 +123,67 @@ class BackupManager:
                 backup_files.append(filepath)
             except Exception as e:
                 self.logger.error(f"Failed to backup {ws.title}: {e}")
+                # A partial backup must not be reported as successful.
+                raise
         
         self.logger.info(f"Backed up {len(backup_files)} sheets")
         return backup_files
+
+    def upload_verified_archive(self, files: List[str], folder_id: str) -> Dict[str, str]:
+        """Upload to the configured Drive folder and verify downloaded archive bytes.
+
+        Uses existing service-account access; does not create/change sharing permissions.
+        Remote copies are never deleted automatically.
+        """
+        from google.auth.transport.requests import AuthorizedSession
+
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
+            for path in files:
+                # Validate each backup can be read before uploading it.
+                with gzip.open(path, "rt", encoding="utf-8") as stream:
+                    record = json.load(stream)
+                if not isinstance(record.get("data"), list) or not record.get("sheet_name"):
+                    raise ValueError("Backup file failed validation")
+                bundle.write(path, os.path.basename(path))
+        content = archive.getvalue()
+        now = datetime.now(ZoneInfo(os.getenv("APP_TIMEZONE", "Asia/Ho_Chi_Minh")))
+        name = "vm-store-backup-" + now.strftime("%Y%m%d-%H%M%S") + ".zip"
+        slots_file = Path(__file__).with_name("backup_slots.json")
+        slots = json.loads(slots_file.read_text(encoding="utf-8")) if slots_file.exists() else {}
+        file_ids = slots.get("file_ids", []) if slots.get("folder_id") == folder_id else []
+        target_id = file_ids[now.date().toordinal() % len(file_ids)] if file_ids else None
+        metadata = json.dumps({"name": name, **({} if target_id else {"parents": [folder_id]})})
+        boundary = secrets.token_hex(16)
+        body = (f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{metadata}\r\n"
+                f"--{boundary}\r\nContent-Type: application/zip\r\n\r\n").encode() + content + f"\r\n--{boundary}--\r\n".encode()
+        with AuthorizedSession(self.credentials) as session:
+            if target_id:
+                target = session.get(f"https://www.googleapis.com/drive/v3/files/{target_id}",
+                                     params={"fields": "name,parents,mimeType,capabilities(canEdit)", "supportsAllDrives": "true"}, timeout=30)
+                target.raise_for_status()
+                details = target.json()
+                # Drive may omit parents for non-owner access. These IDs were created and
+                # verified in the approved folder; still reject a visible conflicting parent.
+                if ((details.get("parents") and folder_id not in details["parents"])
+                        or not details.get("name", "").startswith("vm-store-backup-")
+                        or not details.get("capabilities", {}).get("canEdit")):
+                    raise RuntimeError("Configured backup slot is not editable in the approved folder")
+            request = session.patch if target_id else session.post
+            url = "https://www.googleapis.com/upload/drive/v3/files" + (f"/{target_id}" if target_id else "")
+            response = request(url,
+                                    params={"uploadType": "multipart", "supportsAllDrives": "true", "fields": "id,name"},
+                                    headers={"Content-Type": f"multipart/related; boundary={boundary}"},
+                                    data=body, timeout=120)
+            if not response.ok:
+                raise RuntimeError(f"Drive backup upload failed (HTTP {response.status_code}); check folder access and storage quota")
+            result = response.json()
+            check = session.get(f"https://www.googleapis.com/drive/v3/files/{result['id']}",
+                                params={"alt": "media", "supportsAllDrives": "true"}, timeout=120)
+            check.raise_for_status()
+            if hashlib.sha256(content).digest() != hashlib.sha256(check.content).digest():
+                raise RuntimeError("Uploaded backup checksum verification failed")
+        return {"id": result["id"], "name": name, "sha256": hashlib.sha256(content).hexdigest()}
     
     def restore_sheet(self, backup_file: str, sheet_name: Optional[str] = None):
         """
@@ -153,7 +220,7 @@ class BackupManager:
             
             # Restore data
             if data:
-                worksheet.update(data, value_input_option='USER_ENTERED')
+                worksheet.update(data, value_input_option='RAW')
             
             self.logger.info(f"Restored {target_sheet} from {backup_file}")
             
@@ -293,7 +360,7 @@ class BackupManager:
             # Clear and update
             worksheet.clear()
             if data:
-                worksheet.update(data, value_input_option='USER_ENTERED')
+                worksheet.update(data, value_input_option='RAW')
             
             self.logger.info(f"Imported {csv_file} to {sheet_name}")
             
@@ -350,7 +417,7 @@ class BackupManager:
                 
                 worksheet.clear()
                 if data:
-                    worksheet.update(data, value_input_option='USER_ENTERED')
+                    worksheet.update(data, value_input_option='RAW')
             
             self.logger.info(f"Restored snapshot from {snapshot_file}")
             

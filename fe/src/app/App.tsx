@@ -1,3 +1,4 @@
+import { PaymentReviews } from "./components/sections/PaymentReviews";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Bell, RefreshCw } from "lucide-react";
 import { toast, Toaster } from "sonner";
@@ -24,7 +25,7 @@ import {
 const POLL_MS = 15_000;
 
 export default function App() {
-  const [adminKey, setAdminKey] = useState(() => sessionStorage.getItem("admin_key") || "");
+  const [adminKey, setAdminKey] = useState(() => { sessionStorage.removeItem("admin_key"); return sessionStorage.getItem("admin_session") || ""; });
   const [section, setSection] = useState<AdminSection>("overview");
   const [data, setData] = useState<AdminSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
@@ -129,16 +130,22 @@ export default function App() {
 
   useEffect(() => {
     if (!adminKey) return;
-    const timer = window.setInterval(() => {
-      refresh(adminKey, { silent: true }).catch(() => undefined);
+    const notificationsTimer = window.setInterval(() => {
+      if (!document.hidden) void fetchNotifications(adminKey);
     }, POLL_MS);
-    return () => window.clearInterval(timer);
-  }, [adminKey, refresh]);
+    const snapshotTimer = window.setInterval(() => {
+      if (!document.hidden) refresh(adminKey, { silent: true }).catch(() => undefined);
+    }, 60_000);
+    return () => {
+      window.clearInterval(notificationsTimer);
+      window.clearInterval(snapshotTimer);
+    };
+  }, [adminKey, refresh, fetchNotifications]);
 
   useEffect(() => {
     const onPageShow = (e: PageTransitionEvent) => {
       if (!e.persisted) return;
-      const k = sessionStorage.getItem("admin_key") || "";
+      const k = sessionStorage.getItem("admin_session") || "";
       if (k) void fetchNotifications(k);
     };
     window.addEventListener("pageshow", onPageShow);
@@ -150,15 +157,16 @@ export default function App() {
   }, [unreadCount]);
 
   const handleLogin = async (key: string) => {
-    await adminApi("/admin/api/login", key);
-    sessionStorage.setItem("admin_key", key);
-    setAdminKey(key);
+    await adminApi("/admin/api/login", "", { method: "POST", body: JSON.stringify({ password: key }) });
+    sessionStorage.setItem("admin_session", "active");
+    setAdminKey("active");
     notifHydratedRef.current = false;
     prevNotifIdsRef.current = new Set();
   };
 
   const handleLogout = useCallback(() => {
-    sessionStorage.removeItem("admin_key");
+    sessionStorage.removeItem("admin_session");
+    void adminApi("/admin/api/logout", "", { method: "POST" }).catch(() => undefined);
     setAdminKey("");
     setData(null);
     setNotifications([]);
@@ -242,6 +250,8 @@ export default function App() {
             onOpenRevenue={() => setSection("revenue")}
           />
         );
+      case "payment_reviews":
+        return <PaymentReviews adminKey={adminKey} />;
       case "revenue":
         return <Revenue data={data} />;
       case "notifications":

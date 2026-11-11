@@ -1,10 +1,13 @@
-﻿import os
+import os
 import io
 import re
 import json
 import asyncio
 import logging
 import secrets
+from decimal import Decimal, InvalidOperation
+from reliability import serialized, ReviewRequired
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -86,72 +89,9 @@ ws_res = None
 ws_ful = None
 
 def release_hold_by_order(order_id: str, mark_status: str = "EXPIRED") -> int:
-    """
-    POOL: HELD + hold_order_id=order_id -> READY (xóa hold fields)
-    RESERVATIONS: released_at = now
-    ORDERS: status = mark_status
-    """
-    init_gsheet()
+    from bot_shop import release_hold_by_order_sheet
+    return release_hold_by_order_sheet(order_id, mark_status)
 
-    # ----- POOL -----
-    pool_vals = ws_pool.get_all_values()
-    if len(pool_vals) < 2:
-        return 0
-    ph = normalize_headers(pool_vals[0])
-
-    c_status = ph.get("status")
-    c_hold_oid = ph.get("hold_order_id")
-    c_hold_at = ph.get("hold_at")
-    c_hold_exp = ph.get("hold_expires_at")
-
-    if c_status is None or c_hold_oid is None:
-        return 0
-
-    released = 0
-    cells: List[Cell] = []
-    for i in range(1, len(pool_vals)):
-        rownum = i + 1
-        row = pool_vals[i]
-
-        hold_oid = (row[c_hold_oid] or "").strip() if c_hold_oid < len(row) else ""
-        st = (row[c_status] or "").strip().upper() if c_status < len(row) else ""
-
-        if norm_oid(hold_oid) == norm_oid(order_id) and st == "HELD":
-            cells.append(Cell(rownum, c_status + 1, "READY"))
-            cells.append(Cell(rownum, c_hold_oid + 1, ""))
-
-            if c_hold_at is not None:
-                cells.append(Cell(rownum, c_hold_at + 1, ""))
-            if c_hold_exp is not None:
-                cells.append(Cell(rownum, c_hold_exp + 1, ""))
-
-            released += 1
-
-    if cells:
-        ws_pool.update_cells(cells, value_input_option="USER_ENTERED")
-
-    # ----- RESERVATIONS.released_at -----
-    try:
-        res_vals = ws_res.get_all_values()
-        if len(res_vals) >= 2:
-            rh = normalize_headers(res_vals[0])
-            c_oid = rh.get("order_id")
-            c_rel = rh.get("released_at")
-            if c_oid is not None and c_rel is not None:
-                res_cells: List[Cell] = []
-                nowv = now_str()
-                for i in range(1, len(res_vals)):
-                    rownum = i + 1
-                    row = res_vals[i]
-                    oid = (row[c_oid] or "").strip() if c_oid < len(row) else ""
-                    if norm_oid(oid) == norm_oid(order_id):
-                        res_cells.append(Cell(rownum, c_rel + 1, nowv))
-                if res_cells:
-                    ws_res.update_cells(res_cells, value_input_option="USER_ENTERED")
-    except Exception:
-        pass
-
-    return released
 
 def parse_dt(s: str) -> Optional[datetime]:
     try:
@@ -163,17 +103,17 @@ def is_expired(created_at: str) -> bool:
     dt = parse_dt(created_at)
     if not dt:
         return False
-    return (datetime.now() - dt).total_seconds() > ORDER_TTL_SECONDS
+    return (datetime.now(ZoneInfo(os.getenv("APP_TIMEZONE", "Asia/Ho_Chi_Minh"))).replace(tzinfo=None) - dt).total_seconds() > ORDER_TTL_SECONDS
 
 def now_str() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now(ZoneInfo(os.getenv("APP_TIMEZONE", "Asia/Ho_Chi_Minh"))).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def verify_sepay_auth(request: Request) -> bool:
     """Fail-closed: nếu chưa cấu hình SEPAY_API_KEY thì từ chối, trừ khi bật
     ALLOW_PUBLIC_SEPAY=1 (chỉ dùng cho dev/local)."""
     if not SEPAY_API_KEY:
-        if os.getenv("ALLOW_PUBLIC_SEPAY", "").strip() == "1":
+        if os.getenv("ALLOW_PUBLIC_SEPAY", "").strip() == "1" and not os.getenv("RENDER_EXTERNAL_URL"):
             return True
         logger.warning("verify_sepay_auth: SEPAY_API_KEY missing; rejecting request")
         return False
@@ -197,6 +137,7 @@ def verify_sepay_auth(request: Request) -> bool:
     except Exception:
         return False
 
+@serialized
 def init_gsheet() -> None:
     global gs_client, gs_sheet, ws_orders, ws_pool, ws_res, ws_ful
 
@@ -285,7 +226,7 @@ def get_order_by_id(order_id: str) -> Tuple[Optional[Dict[str, Any]], Optional[i
                 "order_id": oid,
                 "user_id": get_cell(row, "user_id"),
                 "stock_code": get_cell(row, "stock_code"),
-                "qty": safe_int(get_cell(row, "qty")) or 1,
+                "qty": safe_int(get_cell(row, "qty")),
                 "total": safe_int(get_cell(row, "total")),
                 "status": get_cell(row, "status"),
                 "created_at": get_cell(row, "created_at"),
@@ -298,6 +239,7 @@ def get_order_by_id(order_id: str) -> Tuple[Optional[Dict[str, Any]], Optional[i
             return data, (i + 1), ""
     return None, None, "Order not found"
 
+@serialized
 def update_order_cells(rownum: int, updates: Dict[str, Any]) -> None:
     init_gsheet()
     values = ws_orders.get_all_values()
@@ -307,7 +249,7 @@ def update_order_cells(rownum: int, updates: Dict[str, Any]) -> None:
     for k, v in updates.items():
         col = headers.get(k.lower())
         if col is None:
-            continue
+            raise RuntimeError(f"ORDERS missing required field: {k}")
         cells.append(Cell(rownum, col + 1, "" if v is None else str(v)))
 
     if cells:
@@ -315,7 +257,8 @@ def update_order_cells(rownum: int, updates: Dict[str, Any]) -> None:
 
 
 
-def pool_take_held_and_mark_sold(order_id: str) -> List[Dict[str, str]]:
+@serialized
+def pool_take_held_and_mark_sold(order_id: str, expected_qty: int) -> List[Dict[str, str]]:
     """
     Tìm các item HELD trong POOL có hold_order_id=order_id -> mark SOLD,
     trả về list secrets.
@@ -349,21 +292,29 @@ def pool_take_held_and_mark_sold(order_id: str) -> List[Dict[str, str]]:
         hold_oid = (row[c_hold_oid] or "").strip() if c_hold_oid < len(row) else ""
         st = (row[c_status] or "").strip().upper() if c_status < len(row) else ""
 
-        if norm_oid(hold_oid) == norm_oid(order_id) and st == "HELD":
+        sold_oid = (row[c_sold_oid] or "").strip() if c_sold_oid is not None and c_sold_oid < len(row) else ""
+        if ((st == "HELD" and norm_oid(hold_oid) == norm_oid(order_id))
+                or (st == "SOLD" and norm_oid(sold_oid or hold_oid) == norm_oid(order_id))):
             item_id = (row[c_item] or "").strip() if c_item is not None and c_item < len(row) else ""
             stock_code = (row[c_stock] or "").strip() if c_stock is not None and c_stock < len(row) else ""
             secret = (row[c_secret] or "").strip() if c_secret < len(row) else ""
 
-            # ✅ THAY vì update_cell nhiều lần -> gom Cell
-            cells.append(Cell(rownum, c_status + 1, "SOLD"))
-            if c_sold_oid is not None:
-                cells.append(Cell(rownum, c_sold_oid + 1, order_id))
-            if c_sold_at is not None:
-                cells.append(Cell(rownum, c_sold_at + 1, sold_time))
+            if st == "HELD":
+                # ✅ THAY vì update_cell nhiều lần -> gom Cell
+                cells.append(Cell(rownum, c_status + 1, "SOLD"))
+                if c_sold_oid is not None:
+                    cells.append(Cell(rownum, c_sold_oid + 1, order_id))
+                if c_sold_at is not None:
+                    cells.append(Cell(rownum, c_sold_at + 1, sold_time))
 
             items.append({"item_id": item_id, "stock_code": stock_code, "secret": secret})
 
-    # ✅ update POOL 1 lần
+    if len(items) != expected_qty or any(not it["item_id"] or not it["secret"] for it in items):
+        raise ReviewRequired("Đơn đã thanh toán nhưng kho thiếu hàng hợp lệ; cần admin kiểm tra")
+    # Already SOLD allocations are reused without changing their sale timestamp.
+    if not cells:
+        return items
+    # Only validated full allocations can move to SOLD.
     if cells:
         ws_pool.update_cells(cells, value_input_option="USER_ENTERED")
 
@@ -446,22 +397,20 @@ def caption_delivered(order_id: str, stock_code: str, qty: int) -> str:
 
 
 async def gs_call(fn, *args, **kwargs):
-    async with SHEETS_LOCK:
-        last_err: Optional[Exception] = None
-        for attempt, delay in enumerate((0, 2, 5, 12, 20)):
-            if delay:
-                await asyncio.sleep(delay)
-            try:
-                return await asyncio.to_thread(fn, *args, **kwargs)
-            except Exception as e:
-                last_err = e
-                if "429" in str(e) and attempt < 4:
-                    logger.warning("Sheets quota 429, retry %s/%s fn=%s", attempt + 1, 5, fn.__name__)
-                    continue
-                raise
-        if last_err:
-            raise last_err
-
+    last_err: Optional[Exception] = None
+    for attempt, delay in enumerate((0, 2, 5, 12, 20)):
+        if delay:
+            await asyncio.sleep(delay)
+        try:
+            return await asyncio.to_thread(serialized(fn), *args, **kwargs)
+        except Exception as e:
+            last_err = e
+            if "429" in str(e) and attempt < 4:
+                logger.warning("Sheets quota 429, retry %s/%s fn=%s", attempt + 1, 5, fn.__name__)
+                continue
+            raise
+    if last_err:
+        raise last_err
 
 async def edit_text_safe(user_id: int, msg_id: int, text: str, kb: InlineKeyboardMarkup):
     if not tg_bot:
@@ -505,7 +454,7 @@ async def send_delivery_message(user_id: int, order_id: str, stock_code: str, qt
         return False
 
     # clean + tránh vỡ Markdown
-    cleaned = [(s or "").replace("`", "'").strip() for s in secrets if (s or "").strip()]
+    cleaned = [(s or "").strip() for s in secrets if (s or "").strip()]
 
     # File txt: mỗi account cách nhau 2 dòng + separator
     lines_plain: List[str] = []
@@ -564,267 +513,174 @@ async def send_delivery_message(user_id: int, order_id: str, stock_code: str, qt
     except Exception as e:
         logger.exception("send_document FAILED (order=%s): %s", order_id, e)
         return False
-    
+
 def parse_sepay_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     desc = (payload.get("description") or payload.get("content") or "").strip()
-    amount = safe_int(payload.get("transferAmount"), 0)
+    try:
+        value = Decimal(str(payload.get("transferAmount", 0)))
+        amount = int(value) if value.is_finite() and value == value.to_integral_value() else 0
+    except (ValueError, InvalidOperation, OverflowError):
+        amount = 0
     txn_id = (payload.get("referenceCode") or payload.get("id") or "").__str__().strip()
     transfer_type = (payload.get("transferType") or "").strip().lower()
     return {"description": desc, "amount": amount, "txn_id": txn_id, "transfer_type": transfer_type}
 
 
-# ===== Idempotency =====
-# Bộ nhớ tạm các tx_id đã xử lý xong (per-process). Tránh xử lý lặp khi SePay
-# bắn lại cùng 1 transaction (thường do retry sau khi timeout).
-_PROCESSED_TX_IDS: List[str] = []
-_PROCESSED_TX_LIMIT = 2000
-_PROCESSING_TX_IDS: Dict[str, asyncio.Lock] = {}
-_PROCESSING_TX_GLOBAL_LOCK = asyncio.Lock()
+# Payment state changes are serialized with inventory/cancellation in one storage guard.
+# Delivery is performed outside that guard, with one in-flight sender per order.
+_DELIVERING = set()
 
 
-def _remember_tx(tx_id: str) -> None:
-    if not tx_id:
-        return
-    _PROCESSED_TX_IDS.append(tx_id)
-    if len(_PROCESSED_TX_IDS) > _PROCESSED_TX_LIMIT:
-        del _PROCESSED_TX_IDS[: len(_PROCESSED_TX_IDS) - _PROCESSED_TX_LIMIT]
+@serialized
+def _claim_delivery(order_id):
+    if order_id in _DELIVERING:
+        return False
+    _DELIVERING.add(order_id)
+    return True
 
 
-async def _acquire_tx_lock(tx_id: str) -> asyncio.Lock:
-    async with _PROCESSING_TX_GLOBAL_LOCK:
-        lock = _PROCESSING_TX_IDS.get(tx_id)
-        if lock is None:
-            lock = asyncio.Lock()
-            _PROCESSING_TX_IDS[tx_id] = lock
-        return lock
+@serialized
+def _release_delivery(order_id):
+    _DELIVERING.discard(order_id)
 
 
-async def process_payment(payload: Dict[str, Any]) -> None:
+@serialized
+def _prepare_payment(payload):
     info = parse_sepay_payload(payload)
-    amount = info["amount"]
-    desc = info["description"]
-    txn_id = info["txn_id"]
-    transfer_type = info["transfer_type"]
+    if info["transfer_type"] and info["transfer_type"] != "in":
+        return None
+    if not info["txn_id"]:
+        raise ReviewRequired("Giao dịch thiếu mã định danh")
+    account = str(payload.get("accountNumber") or "").strip()
+    if account and account != os.getenv("BANK_NUMBER", "96247W4CBY").strip():
+        raise ReviewRequired("Giao dịch không thuộc tài khoản nhận tiền đã cấu hình")
+    extracted = extract_order_id(info["description"])
+    if not extracted:
+        raise ReviewRequired("Không tìm thấy mã đơn trong nội dung chuyển khoản")
+    order, rownum, _ = get_order_by_id(extracted)
+    if not order or not rownum:
+        raise ReviewRequired("Chưa tìm thấy đơn tương ứng với giao dịch")
+    total = safe_int(order.get("total"))
+    if total <= 0 or info["amount"] != total:
+        raise ReviewRequired("Số tiền chuyển khoản không khớp đơn hàng")
+    existing = (order.get("tx_id") or "").strip()
+    if existing and existing != info["txn_id"]:
+        raise ReviewRequired("Đơn đã có giao dịch khác; cần kiểm tra khoản chuyển thêm")
+    if (order.get("status") or "").upper() == "DELIVERED":
+        return None
+    oid = order["order_id"]
+    values = ws_orders.get_all_values()
+    headers = normalize_headers(values[0])
+    if "tx_id" in headers:
+        for row in values[1:]:
+            if (len(row) > max(headers["tx_id"], headers["order_id"])
+                    and row[headers["tx_id"]] == info["txn_id"]
+                    and row[headers["order_id"]] != oid):
+                raise ReviewRequired("Giao dịch đã gắn với đơn khác")
+    status = (order.get("status") or "").upper()
+    if status in {"CANCELLED", "EXPIRED"}:
+        from bot_shop import reserve_items_from_pool
+        # Record receipt BEFORE attempting to re-reserve late payments.
+        update_order_cells(rownum, {"status": "PAID", "paid_at": now_str(), "tx_id": info["txn_id"]})
+        items = reserve_items_from_pool(order["stock_code"], safe_int(order.get("qty"), 1), oid, ORDER_TTL_SECONDS)
+        if not items:
+            raise ReviewRequired("Đã nhận tiền cho đơn hết hạn/huỷ nhưng kho không đủ; cần xử lý")
+    elif status not in {"PAID", "DELIVERY_PENDING"}:
+        update_order_cells(rownum, {"status": "PAID", "paid_at": now_str(), "tx_id": info["txn_id"]})
+    return oid
 
-    # chỉ nhận tiền vào
-    if transfer_type and transfer_type != "in":
-        logger.info("skip transfer_type=%s", transfer_type)
-        return
 
-    # Idempotency: bỏ qua nếu tx_id này đã xử lý gần đây
-    if txn_id and txn_id in _PROCESSED_TX_IDS:
-        logger.info("Skip duplicate tx_id=%s (already processed)", txn_id)
-        return
-
-    # Serialize per-tx_id để 2 webhook đồng thời không cùng chạy 1 đơn
-    tx_lock = await _acquire_tx_lock(txn_id) if txn_id else None
-    if tx_lock:
-        await tx_lock.acquire()
+@serialized
+def _prepare_delivery(order_id):
+    order, rownum, _ = get_order_by_id(order_id)
+    if not order or not rownum:
+        raise ReviewRequired("Không tìm thấy đơn cần giao")
+    if order.get("status", "").upper() == "DELIVERED":
+        return None
+    if order.get("status", "").upper() not in {"PAID", "DELIVERY_PENDING"}:
+        raise ReviewRequired("Đơn chưa được xác nhận thanh toán")
+    qty = safe_int(order.get("qty"))
+    if qty < 1 or not str(order.get("user_id", "")).isdigit():
+        raise ReviewRequired("Dữ liệu người nhận hoặc số lượng không hợp lệ")
     try:
-        if txn_id and txn_id in _PROCESSED_TX_IDS:
-            logger.info("Skip duplicate tx_id=%s (processed during wait)", txn_id)
+        items = pool_take_held_and_mark_sold(order_id, qty)
+    except ReviewRequired:
+        # A late payment that originally had no allocation may be retried after restocking.
+        values = ws_pool.get_all_values()
+        headers = normalize_headers(values[0])
+        linked = any(any(i < len(row) and norm_oid(row[i]) == norm_oid(order_id)
+                         for k, i in headers.items() if k in {"hold_order_id", "sold_order_id"})
+                     for row in values[1:])
+        if linked:
+            raise
+        from bot_shop import reserve_items_from_pool
+        if len(reserve_items_from_pool(order["stock_code"], qty, order_id, ORDER_TTL_SECONDS)) != qty:
+            raise ReviewRequired("Đơn đã thanh toán nhưng kho chưa đủ; cần nhập hàng hoặc hỗ trợ")
+        items = pool_take_held_and_mark_sold(order_id, qty)
+    content = "\n".join(f"{i}) {it['secret']}" for i, it in enumerate(items, start=1))
+    update_order_cells(rownum, {"status": "DELIVERY_PENDING", "deliver_text": content, "delivered_at": ""})
+    return order, rownum, items
+
+
+@serialized
+def _finish_delivery(order_id, delivered_at):
+    order, rownum, _ = get_order_by_id(order_id)
+    if not order or order.get("status", "").upper() not in {"DELIVERY_PENDING", "DELIVERED"}:
+        raise ReviewRequired("Đã gửi file nhưng trạng thái đơn thay đổi; cần đối soát")
+    update_order_cells(rownum, {"status": "DELIVERED", "delivered_at": delivered_at})
+
+
+async def deliver_paid_order(order_id):
+    if not _claim_delivery(order_id):
+        return
+    try:
+        prepared = await gs_call(_prepare_delivery, order_id)
+        if prepared is None:
             return
-
-        extracted = extract_order_id(desc)
-        if not extracted:
-            logger.warning("No order_id found in desc=%s", desc)
-            return
-
-        # 1) tìm order trong ORDERS trực tiếp bằng extracted
-        order, rownum, err = await gs_call(get_order_by_id, extracted)
-        if not order or not rownum:
-            logger.warning("Order not found | extracted=%s | err=%s", extracted, err)
-            return
-
-        # ✅ canonical_oid: lấy đúng order_id như trong sheet (có thể có '-')
-        canonical_oid = (order.get("order_id") or extracted).strip()
-
-        status = (order.get("status") or "PENDING").upper()
-        if status == "DELIVERED":
-            logger.info("Skip: already DELIVERED %s", canonical_oid)
-            _remember_tx(txn_id)
-            return
-
-        created_at = (order.get("created_at") or "").strip()
-
-        user_id_s = (order.get("user_id") or "").strip()
-        qr_msg_id_s = (order.get("qr_msg_id") or "").strip()
-        stock_code = (order.get("stock_code") or "").strip()
-        qty = int(order.get("qty") or 1)
-        total_need = int(order.get("total") or 0)
-
-        if not user_id_s.isdigit():
-            logger.warning("Bad user_id in order %s: %s", canonical_oid, user_id_s)
-            return
-        user_id = int(user_id_s)
-
-        if CHECK_AMOUNT and total_need and amount != total_need:
-            logger.warning("Amount mismatch for %s: got=%s need=%s", canonical_oid, amount, total_need)
-            return
-
-        if status in ("CANCELLED", "EXPIRED"):
-            from bot_shop import reserve_items_from_pool
-
-            held = await gs_call(reserve_items_from_pool, stock_code, qty, canonical_oid, ORDER_TTL_SECONDS)
-            if len(held) < qty:
-                logger.warning(
-                    "Paid but cannot re-hold stock | order=%s need=%s got=%s",
-                    canonical_oid, qty, len(held),
-                )
-                return
-            logger.info("Re-held stock for paid %s order (was %s)", canonical_oid, status)
-            status = "PENDING"
-
-        resume_paid = status == "PAID"
-        existing_tx = (order.get("tx_id") or "").strip()
-        if existing_tx:
-            if norm_oid(existing_tx) == norm_oid(txn_id):
-                if status == "DELIVERED":
-                    logger.info("Skip: already DELIVERED %s", canonical_oid)
-                    _remember_tx(txn_id)
-                    return
-                if status == "PAID":
-                    resume_paid = True
-                elif status == "PENDING":
-                    pass
-                else:
-                    logger.info("Skip retry: same tx_id=%s | order=%s", existing_tx, canonical_oid)
-                    _remember_tx(txn_id)
-                    return
-            elif not resume_paid:
-                logger.warning(
-                    "Order already has tx_id=%s but got new txn_id=%s | order=%s",
-                    existing_tx, txn_id, canonical_oid,
-                )
-                return
-
-        # Thanh toán đúng hạn nhưng webhook trễ — vẫn giao nếu còn HELD
-        if status == "PENDING" and created_at and is_expired(created_at):
-            logger.info("Late payment accepted for %s (past TTL)", canonical_oid)
-
-        # 2) mark PAID
-        if not resume_paid:
-            paid_at = now_str()
-            await gs_call(update_order_cells, rownum, {"status": "PAID", "paid_at": paid_at, "tx_id": txn_id})
-
-        # 3) take HELD -> SOLD and get secrets
-        items = await gs_call(pool_take_held_and_mark_sold, canonical_oid)
-
-        secrets = [
-            (it.get("secret") or "").strip()
-            for it in items
-            if (it.get("secret") or "").strip()
-        ]
-
-        # ✅ không lấy được HELD/secret => KHÔNG DELIVERED
-        if not items or not secrets:
-            logger.warning(
-                "No items/secrets from POOL for order=%s | items=%s | secrets=%s. Keep status=PAID",
-                canonical_oid, len(items), len(secrets)
-            )
-            await gs_call(
-                update_order_cells,
-                rownum,
-                {"status": "PAID", "deliver_text": "(POOL_EMPTY)", "delivered_at": ""},
-            )
-            try:
-                from bot_shop import notify_admins_order_event
-
-                paid_row = dict(order)
-                paid_row["order_id"] = canonical_oid
-                paid_row["status"] = "PAID"
-                await notify_admins_order_event(None, "paid", paid_row, bot=tg_bot)
-            except Exception as e:
-                logger.warning("notify_admins_order_event paid failed: %s", e)
-            return
-
+        order, rownum, items = prepared
+        qty = safe_int(order.get("qty"))
+        if not await send_delivery_message(int(order["user_id"]), order_id, order["stock_code"], qty,
+                                           [it["secret"] for it in items]):
+            raise RuntimeError("Telegram delivery failed; will retry")
         delivered_at = now_str()
-        deliver_text_plain = "\n".join([f"{i}) {s}" for i, s in enumerate(secrets, start=1)])
-
-        # 4) update DELIVERED (chỉ update rownum)
-        await gs_call(
-            update_order_cells,
-            rownum,
-            {"status": "DELIVERED", "delivered_at": delivered_at, "deliver_text": deliver_text_plain},
-        )
-
+        # If the send succeeds but this write fails, retry may send the SAME allocation again.
+        # Never allocate new stock on recovery.
+        await gs_call(_finish_delivery, order_id, delivered_at)
         try:
-            from bot_shop import notify_admins_order_event
-
-            delivered_row = dict(order)
-            delivered_row["order_id"] = canonical_oid
-            delivered_row["status"] = "DELIVERED"
-            delivered_row["delivered_at"] = delivered_at
-            delivered_row["deliver_text"] = deliver_text_plain
-            await notify_admins_order_event(None, "delivered", delivered_row, bot=tg_bot)
-        except Exception as e:
-            logger.warning("notify_admins_order_event delivered failed: %s", e)
-
-        # 5) write fulfillments
-        try:
-            await gs_call(append_fulfillment_rows, canonical_oid, items, delivered_at)
+            await gs_call(append_fulfillment_rows, order_id, items, delivered_at)
         except Exception:
-            pass
-
-        # 6) send delivery message
-        sent_ok = False
+            logger.exception("Fulfillment audit write failed for %s", order_id)
         try:
-            sent_ok = await send_delivery_message(user_id, canonical_oid, stock_code, qty, secrets)
-        except Exception as e:
-            logger.exception("send_delivery_message crashed: %s", e)
-            sent_ok = False
-
-        # Xoá các message "Chưa tìm thấy giao dịch" mà user đã thấy trong lúc chờ
-        try:
-            from bot_shop import cleanup_check_miss_messages
-            if tg_bot:
-                await cleanup_check_miss_messages(tg_bot, canonical_oid)
-        except Exception as e:
-            logger.warning("cleanup_check_miss_messages failed: %s", e)
-
-        # 7) nếu gửi OK thì xoá QR; nếu không thì chỉ edit lại caption
-        if qr_msg_id_s.isdigit() and tg_bot:
-            if sent_ok:
-                try:
-                    await tg_bot.delete_message(chat_id=user_id, message_id=int(qr_msg_id_s))
-                except Exception as e:
-                    logger.warning(
-                        "delete qr message failed (order=%s, msg_id=%s): %s",
-                        canonical_oid, qr_msg_id_s, e,
-                    )
-                    try:
-                        await edit_checkout_safe(
-                            user_id,
-                            int(qr_msg_id_s),
-                            caption_delivered(canonical_oid, stock_code, qty),
-                            kb_delivered(),
-                        )
-                    except Exception:
-                        pass
-            else:
-                try:
-                    await edit_checkout_safe(
-                        user_id,
-                        int(qr_msg_id_s),
-                        caption_delivered(canonical_oid, stock_code, qty),
-                        kb_delivered(),
-                    )
-                except Exception:
-                    pass
-
-        logger.info(
-            "DELIVERED ok: %s user=%s qty=%s secrets=%s",
-            canonical_oid, user_id, qty, len(secrets),
-        )
-        _remember_tx(txn_id)
+            from bot_shop import cleanup_check_miss_messages, notify_admins_order_event
+            await notify_admins_order_event(None, "delivered", dict(order, status="DELIVERED", delivered_at=delivered_at), bot=tg_bot)
+            await cleanup_check_miss_messages(tg_bot, order_id)
+            mid = str(order.get("qr_msg_id") or "")
+            if tg_bot and mid.isdigit():
+                await tg_bot.delete_message(chat_id=int(order["user_id"]), message_id=int(mid))
+        except Exception:
+            logger.exception("Delivery notification/checkout cleanup failed for %s", order_id)
     finally:
-        if tx_lock:
-            tx_lock.release()
-        if txn_id:
-            async with _PROCESSING_TX_GLOBAL_LOCK:
-                lock = _PROCESSING_TX_IDS.get(txn_id)
-                if lock is not None and not lock.locked():
-                    _PROCESSING_TX_IDS.pop(txn_id, None)
+        _release_delivery(order_id)
+
+
+async def process_payment(payload):
+    order_id = await gs_call(_prepare_payment, payload)
+    if order_id:
+        await deliver_paid_order(order_id)
+
+
+@serialized
+def recoverable_orders():
+    init_gsheet()
+    values = ws_orders.get_all_values()
+    if not values:
+        return []
+    headers = normalize_headers(values[0])
+    return [row[headers["order_id"]] for row in values[1:]
+            if len(row) > max(headers["status"], headers["order_id"])
+            and row[headers["status"]].upper() in {"PAID", "DELIVERY_PENDING"}]
+
+
 def get_all_pending_orders() -> List[Tuple[int, Dict[str, Any]]]:
     """
     Return list of (rownum, order_dict) for PENDING orders.
@@ -880,15 +736,11 @@ async def expire_scan_once() -> Dict[str, Any]:
             continue
 
         # 1) trả kho (POOL HELD -> READY)
-        rel = await gs_call(release_hold_by_order, oid, "EXPIRED")
+        try:
+            rel = await gs_call(release_hold_by_order, oid, "EXPIRED")
+        except ValueError:
+            continue
         released_total += int(rel or 0)
-
-        # 2) set order EXPIRED
-        await gs_call(update_order_cells, rownum, {
-            "status": "EXPIRED",
-            "deliver_text": f"(AUTO_EXPIRED_{ORDER_TTL_SECONDS}s)",
-            "delivered_at": "",
-        })
 
         # 3) best-effort xoá QR
         user_id_s = (order.get("user_id") or "").strip()
@@ -906,12 +758,8 @@ async def expire_scan_once() -> Dict[str, Any]:
 
 @app.post("/jobs/expire")
 async def jobs_expire(request: Request):
-    # (tuỳ chọn) bảo vệ endpoint bằng API key dùng chung SEPAY_API_KEY
-    # nếu bạn muốn tắt bảo vệ thì comment 5 dòng dưới
-    if SEPAY_API_KEY:
-        key = (request.headers.get("x-api-key") or "").strip()
-        if key != SEPAY_API_KEY:
-            raise HTTPException(status_code=401, detail="Unauthorized")
+    if not verify_sepay_auth(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
     return await expire_scan_once()
 
@@ -927,7 +775,10 @@ async def sepay_webhook(request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
-    asyncio.create_task(process_payment(payload))  # ✅ chạy thật sự
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "Expected JSON object")
+    from operations import enqueue_event
+    await asyncio.to_thread(enqueue_event, "sepay", payload)
     return {"ok": True, "queued": True}
 
 
@@ -946,8 +797,31 @@ async def root():
     }
 
 
+_standalone_worker = None
+
+
+@app.on_event("startup")
+async def standalone_start():
+    global _standalone_worker
+    if tg_bot:
+        await tg_bot.initialize()
+    from operations import worker_loop
+    _standalone_worker = asyncio.create_task(worker_loop())
+
+
+@app.on_event("shutdown")
+async def standalone_stop():
+    if _standalone_worker:
+        _standalone_worker.cancel()
+        await asyncio.gather(_standalone_worker, return_exceptions=True)
+    if tg_bot:
+        await tg_bot.shutdown()
+
+
 if __name__ == "__main__":
     import uvicorn
+    import sys
+    sys.modules["sepay_webhook"] = sys.modules[__name__]
 
     port = int(os.getenv("SEPAY_PORT", "8001"))
     logger.info("Starting SePay webhook on port %s ...", port)

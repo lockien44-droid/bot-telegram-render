@@ -9,7 +9,7 @@ import { Input } from "../ui/input";
 import { ClipboardCopy, ClipboardList, Search } from "lucide-react";
 import { adminApi, money, sortOrdersNewestFirst, text, type AdminSnapshot, type AnyRow } from "../../api";
 
-type OrderStatus = "PENDING" | "PAID" | "DELIVERED" | "EXPIRED" | "CANCELLED";
+type OrderStatus = "PENDING" | "PAID" | "DELIVERY_PENDING" | "DELIVERED" | "EXPIRED" | "CANCELLED";
 type OrderFilter = OrderStatus | "ALL" | "FAILED";
 
 interface Props {
@@ -19,7 +19,7 @@ interface Props {
   preset?: { status?: string; orderId?: string; nonce: number };
 }
 
-const ALL_STATUSES: OrderStatus[] = ["PENDING", "PAID", "DELIVERED", "EXPIRED", "CANCELLED"];
+const ALL_STATUSES: OrderStatus[] = ["PENDING", "PAID", "DELIVERY_PENDING", "DELIVERED", "EXPIRED", "CANCELLED"];
 
 const deliverySecretText = (item: AnyRow) => {
   const value = text(item.secret || item.deliver_text || item.delivery_text || item.account || item.accounts);
@@ -192,6 +192,6 @@ function DeliverySecrets({ items }: { items: AnyRow[] }) {
 
 function OrderBadge({ status }: { status: string }) {
   const bad = status === "EXPIRED" || status === "CANCELLED";
-  const good = status === "DELIVERED" || status === "PAID";
+  const good = status === "DELIVERED" || status === "PAID" || status === "DELIVERY_PENDING";
   return <Badge variant={bad ? "destructive" : good ? "default" : "secondary"}>{status}</Badge>;
 }

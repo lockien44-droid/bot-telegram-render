@@ -15,3 +15,7 @@ services:
         value: "300"
       - key: PORT
         value: "10000"
+      - key: MAX_PENDING_PER_USER
+        value: "2"
+      - key: BACKUP_DRIVE_FOLDER_ID
+        value: "1mjOAK0R5A99KfGDfymC9Cy0s77WdGJ9v"

@@ -61,6 +61,7 @@ from custom_emojis import (
 )
 
 import httpx
+from reliability import serialized, ReviewRequired
 from vietqr_local import generate_png as generate_vietqr_png
 
 SHEETS_LOCK = asyncio.Lock()
@@ -136,7 +137,7 @@ _TELEGRAM_UPDATE_DEDUP_MAX = 8000
 
 ORDER_TTL_SECONDS = int(os.getenv("ORDER_TTL_SECONDS", "300"))  # 5 phút
 # Đơn hiển thị cho khách: giao thành công + đang chờ thanh toán (PAID/PENDING)
-USER_ORDER_VISIBLE_STATUSES = {"DELIVERED", "PAID", "PENDING"}
+USER_ORDER_VISIBLE_STATUSES = {"DELIVERED", "DELIVERY_PENDING", "PAID", "PENDING"}
 APP_TIMEZONE = os.getenv("APP_TIMEZONE", "Asia/Ho_Chi_Minh").strip() or "Asia/Ho_Chi_Minh"
 LOCAL_TZ = ZoneInfo(APP_TIMEZONE)
 
@@ -230,7 +231,7 @@ def normalize_stock_code(code: Any) -> str:
 def _get_http_client() -> httpx.AsyncClient:
     global _http_client
     if _http_client is None or _http_client.is_closed:
-        _http_client = httpx.AsyncClient(timeout=httpx.Timeout(10.0))
+        _http_client = httpx.AsyncClient(timeout=httpx.Timeout(10.0), headers={"x-api-key": os.getenv("SHOP_API_KEY", "")})
     return _http_client
 
 
@@ -513,8 +514,7 @@ async def notify_user_start_event(
 async def gs_call(fn, *args, **kwargs):
     if asyncio.iscoroutinefunction(fn):
         return await fn(*args, **kwargs)
-    async with SHEETS_LOCK:
-        return await asyncio.to_thread(fn, *args, **kwargs)
+    return await asyncio.to_thread(serialized(fn), *args, **kwargs)
 
 def now_dt() -> datetime:
     return datetime.now(LOCAL_TZ).replace(tzinfo=None)
@@ -864,34 +864,7 @@ def get_all_user_chat_ids() -> List[int]:
             out.append(int(cid))
     return out
 
-# def init_sheets():
-#     global _gs_client, _gs_sheet, _ws_orders, _ws_products, _ws_pool, _ws_res, _ws_users
-
-#     # giữ nguyên phần check return
-#     if _ws_orders and _ws_products and _ws_pool and _ws_res and _ws_users:
-#         return
-
-#     if not GSHEET_ID:
-#         raise RuntimeError("GSHEET_ID empty (hãy set ENV GSHEET_ID)")
-#     if not os.path.exists(GSVC_JSON):
-#         raise RuntimeError(f"GSVC_JSON not found: {GSVC_JSON}")
-
-#     scopes = [
-#         "https://www.googleapis.com/auth/spreadsheets",
-#         "https://www.googleapis.com/auth/drive",
-#     ]
-#     creds = Credentials.from_service_account_file(GSVC_JSON, scopes=scopes)
-#     _gs_client = gspread.authorize(creds)
-#     _gs_sheet = _gs_client.open_by_key(GSHEET_ID)
-
-#     _ws_orders = _gs_sheet.worksheet(TAB_ORDERS)
-#     _ws_products = _gs_sheet.worksheet(TAB_PRODUCTS)
-#     _ws_pool = _gs_sheet.worksheet(TAB_POOL)
-#     _ws_res = _gs_sheet.worksheet(TAB_RES)
-#     _ws_users = _gs_sheet.worksheet(TAB_USERS)
-
-
-
+@serialized
 def init_sheets():
     global _gs_client, _gs_sheet, _ws_orders, _ws_products, _ws_pool, _ws_res, _ws_users, _ws_ful, _ws_notif
 
@@ -1245,6 +1218,49 @@ async def find_product_by_stock_code(stock_code: str) -> Optional[Dict[str, Any]
     return None
 
 # ================== POOL + RESERVATIONS ==================
+
+@serialized
+def create_reserved_order(user_id, product, qty, order_id, created_at):
+    if not isinstance(qty, int) or not 1 <= qty <= 20:
+        raise ValueError("Số lượng phải từ 1 đến 20.")
+    existing = get_order_sheet(order_id)
+    if existing:
+        if str(existing.get("user_id")) != str(user_id) or existing.get("stock_code") != product["stock_code"] or normalize_int(existing.get("qty")) != qty:
+            raise ValueError("Mã đơn đã được sử dụng cho yêu cầu khác.")
+        return order_id
+    pending = [o for o in list_pending_orders() if str(o.get("user_id")) == str(user_id)]
+    if len(pending) >= int(os.getenv("MAX_PENDING_PER_USER", "2")):
+        raise ValueError("Bạn đang có đơn chờ thanh toán. Hãy thanh toán hoặc huỷ đơn cũ trước.")
+    try:
+        items = reserve_items_from_pool(product["stock_code"], qty, order_id, ORDER_TTL_SECONDS)
+        if len(items) != qty:
+            raise ValueError("Kho không đủ hàng hợp lệ để tạo đơn.")
+        append_order({"order_id": order_id, "user_id": user_id, "stock_code": product["stock_code"],
+                      "qty": qty, "total": int(product["price"]) * qty, "status": "PENDING",
+                      "qr_msg_id": "", "paid_at": "", "tx_id": "", "delivered_at": "",
+                      "deliver_text": "", "created_at": created_at})
+    except Exception:
+        # The order append may have succeeded before a network timeout. Preserve it in that case.
+        if not get_order_sheet(order_id):
+            release_hold_by_order_sheet(order_id, "CANCELLED")
+        raise
+    return order_id
+
+
+@serialized
+def release_orphan_holds():
+    init_sheets()
+    known = {o.get("order_id") for o in get_all_records(_ws_orders)}
+    orphans = set()
+    for item in get_all_records(_ws_pool):
+        oid = item.get("hold_order_id", "")
+        expiry = parse_dt(item.get("hold_expires_at", ""))
+        if item.get("status", "").upper() == "HELD" and oid and oid not in known and expiry and expiry < now_dt():
+            orphans.add(oid)
+    for oid in orphans:
+        release_hold_by_order_sheet(oid, "EXPIRED")
+    return len(orphans)
+@serialized
 def reserve_items_from_pool(stock_code: str, qty: int, order_id: str, hold_seconds: int) -> List[Dict[str, str]]:
     """
     Lấy qty item READY từ POOL theo stock_code -> set HELD + hold_order_id/hold_at/hold_expires_at
@@ -1265,7 +1281,7 @@ def reserve_items_from_pool(stock_code: str, qty: int, order_id: str, hold_secon
     col_hold_at = hmap.get("hold_at")
     col_hold_exp = hmap.get("hold_expires_at")
 
-    if not (col_item_id and col_stock and col_secret and col_status):
+    if not all((col_item_id, col_stock, col_secret, col_status, col_hold_oid, col_hold_at, col_hold_exp)):
         raise RuntimeError("POOL thiếu cột bắt buộc (item_id, stock_code, secret, status)")
 
     now = now_str()
@@ -1279,6 +1295,8 @@ def reserve_items_from_pool(stock_code: str, qty: int, order_id: str, hold_secon
         if normalize_stock_code(sc) == stock_code and st == "READY":
             item_id = r[col_item_id - 1].strip() if col_item_id - 1 < len(r) else ""
             secret = r[col_secret - 1].strip() if col_secret - 1 < len(r) else ""
+            if not item_id or not secret:
+                continue
             selected.append((idx, {"item_id": item_id, "stock_code": sc, "secret": secret}))
             if len(selected) >= qty:
                 break
@@ -1324,6 +1342,7 @@ def reserve_items_from_pool(stock_code: str, qty: int, order_id: str, hold_secon
     invalidate_stock_cache()
     return [item for _, item in selected]
 
+@serialized
 def release_hold_by_order_sheet(
     order_id: str,
     mark_status: str,
@@ -1335,6 +1354,11 @@ def release_hold_by_order_sheet(
     + ORDERS.status = mark_status
     """
     init_sheets()
+    if mark_status not in {"CANCELLED", "EXPIRED"}:
+        raise ValueError("Trạng thái trả kho phải là CANCELLED hoặc EXPIRED")
+    current = get_order_sheet(order_id)
+    if current and (current.get("status") or "").upper() in {"PAID", "DELIVERY_PENDING", "DELIVERED"}:
+        raise ValueError("Không thể trả kho của đơn đã thanh toán")
 
     pool_vals = _ws_pool.get_all_values()
     if not pool_vals or len(pool_vals) < 2:
@@ -1410,6 +1434,7 @@ async def release_hold_by_order(
     return released
 
 
+@serialized
 def mark_sold_and_get_secrets(order_id: str) -> List[Dict[str, str]]:
     """
     Khi giao: POOL HELD (hold_order_id=order_id) -> SOLD + sold_at/sold_order_id
@@ -1469,6 +1494,7 @@ def mark_sold_and_get_secrets(order_id: str) -> List[Dict[str, str]]:
     return items
 
 # ================== ORDERS ==================
+@serialized
 def append_order(order_row: Dict[str, Any]) -> None:
     init_sheets()
     h = headers_map(_ws_orders)
@@ -1547,6 +1573,7 @@ async def set_order_fields(order_id: str, updates: Dict[str, Any]) -> None:
     await gs_call(set_order_fields_sheet, order_id, updates)
 
 
+@serialized
 def set_order_fields_sheet(
     order_id: str,
     updates: Dict[str, Any],
@@ -1639,6 +1666,7 @@ def append_fulfillment(order_id: str, item_id: str, stock_code: str, secret: str
     put("delivered_at", delivered_at)
     _ws_ful.append_row(row_values, value_input_option="USER_ENTERED")
 
+@serialized
 def append_fulfillments_bulk(order_id: str, items: List[Dict[str, str]], delivered_at: str) -> None:
     """
     Append nhiều dòng vào sheet FULFILLMENTS chỉ 1 lần (nhanh hơn nhiều).
@@ -3057,7 +3085,7 @@ async def handle_custom_qty_input(update: Update, context: ContextTypes.DEFAULT_
 
     qty = int(t)
 
-    ok = await checkout_flow(user_id, p, qty, context, edit_query=None, from_custom_qty=True)
+    ok = await checkout_flow(user_id, p, qty, context, edit_query=None, from_custom_qty=True, request_id=f"update:{update.update_id}")
 
     if ok:
         PENDING_QTY.pop(user_id, None)  # ✅ chỉ pop khi tạo đơn OK
@@ -3145,10 +3173,13 @@ async def ttl_job(context: ContextTypes.DEFAULT_TYPE):
         return
 
     st = (order.get("status") or "PENDING").upper()
-    if st in ("PAID", "DELIVERED", "CANCELLED", "EXPIRED"):
+    if st in ("PAID", "DELIVERY_PENDING", "DELIVERED", "CANCELLED", "EXPIRED"):
         return
 
-    released = await gs_call(release_hold_by_order, order_id, "EXPIRED")
+    try:
+        released = await gs_call(release_hold_by_order, order_id, "EXPIRED")
+    except ValueError:
+        return
 
     qr_msg_id = (order.get("qr_msg_id") or "").strip()
     if qr_msg_id.isdigit():
@@ -3192,6 +3223,7 @@ async def checkout_flow(
     context: ContextTypes.DEFAULT_TYPE,
     edit_query=None,
     from_custom_qty: bool = False,
+    request_id: str = "",
 ) -> bool:
     pid = (product.get("product_id") or "").strip()
     if not pid:
@@ -3256,7 +3288,16 @@ async def checkout_flow(
         except Exception:
             pass
 
-    order_id = ""
+    request_id = request_id or (f"callback:{edit_query.id}" if edit_query else "")
+    if request_id:
+        from operations import inbox
+        store = await asyncio.to_thread(inbox)
+        order_id = await asyncio.to_thread(store.checkout_order_id, request_id, generate_order_id)
+        existing = await gs_call(get_order, order_id)
+        if existing and (existing.get("qr_msg_id") or existing.get("status") != "PENDING"):
+            return True
+    else:
+        order_id = generate_order_id()
     total = 0
     created_at = now_str()
     api_ok = False
@@ -3269,6 +3310,7 @@ async def checkout_flow(
                     "user_id": user_id,
                     "stock_code": product["stock_code"],
                     "qty": qty,
+                    "request_id": request_id,
                 },
             )
             if resp.status_code == 200:
@@ -3283,40 +3325,12 @@ async def checkout_flow(
             logger.warning("create order API failed: %s", e)
 
     if not api_ok:
-        order_id = generate_order_id()
         total = int(product["price"]) * qty
-        reserved_items = await gs_call(
-            reserve_items_from_pool,
-            product["stock_code"], qty, order_id, ORDER_TTL_SECONDS,
-        )
-        if len(reserved_items) < qty:
-            msg = "❌ Không thể giữ kho (POOL). Vui lòng nhập lại số lượng hoặc thử lại."
-            if from_custom_qty:
-                await _ask_retry(msg)
-                return False
-            if edit_query:
-                try:
-                    await edit_query.edit_message_text(msg)
-                except Exception:
-                    pass
-            else:
-                await context.bot.send_message(chat_id=user_id, text=msg, reply_markup=main_menu_keyboard())
+        try:
+            await gs_call(create_reserved_order, user_id, product, qty, order_id, created_at)
+        except ValueError as exc:
+            await context.bot.send_message(chat_id=user_id, text=str(exc), reply_markup=main_menu_keyboard())
             return False
-
-        await gs_call(append_order, {
-            "order_id": order_id,
-            "user_id": user_id,
-            "stock_code": product["stock_code"],
-            "qty": qty,
-            "total": total,
-            "status": "PENDING",
-            "qr_msg_id": "",
-            "paid_at": "",
-            "tx_id": "",
-            "delivered_at": "",
-            "deliver_text": "",
-            "created_at": created_at,
-        })
 
     qr_url = build_vietqr_image_url(order_id, total)
 
@@ -3427,7 +3441,7 @@ async def confirm_paid(update: Update, context: ContextTypes.DEFAULT_TYPE, order
     status = (order.get("status", "") or "PENDING").upper()
     stock_code = (order.get("stock_code") or "").strip()
 
-    if status not in ("PAID", "DELIVERED"):
+    if status not in ("PAID", "DELIVERY_PENDING", "DELIVERED"):
         try:
             await q.answer("🔎 Đang kiểm tra giao dịch…")
         except Exception:
@@ -3450,8 +3464,8 @@ async def confirm_paid(update: Update, context: ContextTypes.DEFAULT_TYPE, order
                 "transactionDate": tx.get("transaction_date") or tx.get("transactionDate") or now_str(),
             }
             try:
-                from sepay_webhook import process_payment as _sepay_process
-                await _sepay_process(payload)
+                from operations import enqueue_event
+                await asyncio.to_thread(enqueue_event, "sepay", payload)
             except Exception as e:
                 logger.warning("manual SePay process_payment failed for %s: %s", order_id, e)
 
@@ -3461,7 +3475,7 @@ async def confirm_paid(update: Update, context: ContextTypes.DEFAULT_TYPE, order
             delivered_via_userapi = status == "DELIVERED"
 
         # 2) Nếu vẫn chưa PAID/DELIVERED — wait nhẹ rồi đọc lại sheet (đề phòng webhook đến trễ)
-        if status not in ("PAID", "DELIVERED"):
+        if status not in ("PAID", "DELIVERY_PENDING", "DELIVERED"):
             await asyncio.sleep(2.0)
             order = await gs_call(get_order, order_id) or order
             status = (order.get("status", "") or "PENDING").upper()
@@ -3501,7 +3515,7 @@ async def confirm_paid(update: Update, context: ContextTypes.DEFAULT_TYPE, order
             return
 
         # Nếu PAID/DELIVERED qua webhook khác — đi tiếp vào nhánh giao hàng phía dưới
-        if status in ("PAID", "DELIVERED"):
+        if status in ("PAID", "DELIVERY_PENDING", "DELIVERED"):
             pass
         else:
             remain = remaining_seconds(order.get("created_at", ""), ORDER_TTL_SECONDS)
@@ -3641,136 +3655,16 @@ async def confirm_paid(update: Update, context: ContextTypes.DEFAULT_TYPE, order
         )
         return
 
-    # ================== GIAO HÀNG khi status=PAID ==================
-    items = await gs_call(mark_sold_and_get_secrets, order_id)
-    # Fallback: nếu không tìm thấy HELD nhưng fulfillments đã có -> coi như delivered và resend
-    if not items:
-        secrets = await gs_call(get_fulfillment_secrets, order_id)
-        if secrets:
-            await gs_call(set_order_fields, order_id, {"status": "DELIVERED"})
-            return await confirm_paid(update, context, order_id)
+    # Use the same recovery path as the payment worker; never mark delivered before send.
+    from sepay_webhook import deliver_paid_order
+    try:
+        await deliver_paid_order(order_id)
+    except ReviewRequired:
+        await context.bot.send_message(chat_id=q.from_user.id, text="Đơn đã thanh toán, đang chờ hỗ trợ xử lý. Admin đã được ghi nhận để kiểm tra.")
+    except Exception:
+        logger.exception("Manual delivery retry failed for %s", order_id)
+        await context.bot.send_message(chat_id=q.from_user.id, text="Đơn đã thanh toán. Hệ thống sẽ tự thử giao lại, bạn không cần chuyển khoản thêm.")
 
-        await context.bot.send_message(
-            chat_id=q.from_user.id,
-            text="❌ Không tìm thấy item HELD để giao (POOL).",
-            reply_markup=main_menu_keyboard(),
-        )
-        return
-
-
-    delivered_at = now_str()
-
-    secrets_plain = []
-    secrets_md = []
-    for i, it in enumerate(items, start=1):
-        sec = _safe_secret(it.get("secret", ""))
-        if not sec:
-            continue
-        secrets_plain.append(f"{i}) {sec}")
-        secrets_md.append(f"{i}) `{sec}`")
-
-    deliver_text_plain = "\n".join(secrets_plain) if secrets_plain else "(trống)"
-    deliver_text_md = "\n".join(secrets_md) if secrets_md else "(trống)"
-
-    await gs_call(append_fulfillments_bulk, order_id, items, delivered_at)
-
-    await gs_call(set_order_fields, order_id, {
-        "status": "DELIVERED",
-        "delivered_at": delivered_at,
-        "deliver_text": deliver_text_plain
-    })
-
-    await cleanup_check_miss_messages(context.bot, order_id)
-
-    # stop countdown job
-    remove_jobs_by_prefix(context.application, f"countdown_{order_id}")
-
-    # Xoá tin nhắn QR + nút "Kiểm tra thanh toán/Huỷ đơn" khi giao hàng thành công.
-    qr_msg_id_str = (order.get("qr_msg_id") or "").strip()
-    qr_deleted_ids: set[int] = set()
-    candidate_ids: List[int] = []
-    if qr_msg_id_str.isdigit():
-        candidate_ids.append(int(qr_msg_id_str))
-    if q.message and q.message.message_id:
-        candidate_ids.append(q.message.message_id)
-    for mid in candidate_ids:
-        if mid in qr_deleted_ids:
-            continue
-        try:
-            await context.bot.delete_message(chat_id=q.from_user.id, message_id=mid)
-            qr_deleted_ids.add(mid)
-        except Exception:
-            try:
-                await context.bot.edit_message_reply_markup(
-                    chat_id=q.from_user.id, message_id=mid, reply_markup=None
-                )
-            except Exception:
-                pass
-
-    qty_val = normalize_int(order.get("qty"), len(secrets_plain) if secrets_plain else len(items))
-    usage_guide_line = await usage_guide_line_for_stock(stock_code)
-
-    delivered_row = dict(order)
-    delivered_row["status"] = "DELIVERED"
-    delivered_row["delivered_at"] = delivered_at
-    await notify_admins_order_event(context, "delivered", delivered_row, actor_id=q.from_user.id)
-
-    # >=5 -> gửi file + preview
-    if qty_val >= 5 or len(secrets_plain) >= 5:
-        preview_n = 2
-        preview_md = "\n".join(secrets_md[:preview_n]) if secrets_md else "(trống)"
-        more_count = max(0, len(secrets_md) - preview_n)
-
-        content = (
-            f"ORDER: {order_id}\n"
-            f"PRODUCT: {stock_code}\n"
-            f"QTY: {qty_val}\n"
-            f"DELIVERED_AT: {delivered_at}\n"
-            "====================\n"
-            + deliver_text_plain +
-            "\n"
-        )
-        bio = io.BytesIO(content.encode("utf-8"))
-        bio.name = f"{order_id}.txt"
-
-        await context.bot.send_document(
-            chat_id=q.from_user.id,
-            document=bio,
-            caption=(
-                "✅ *MUA HÀNG THÀNH CÔNG*\n"
-                "━━━━━━━━━━━━━━━━━━\n"
-                f"🧾 *Mã đơn:* `{order_id}`\n"
-                f"📦 *SP:* `{stock_code}`\n"
-                f"🔢 *SL:* *{qty_val}*\n\n"
-                "👀 *Preview (1–2 dòng):*\n"
-                f"{preview_md}\n"
-                f"{'…' if more_count > 0 else ''}\n\n"
-                f"{usage_guide_line or file_delivery_line()}\n"
-                "🔐 Nếu là tài khoản, vui lòng *đổi mật khẩu ngay* sau khi đăng nhập."
-            ),
-            parse_mode="Markdown",
-            reply_markup=main_menu_keyboard(),
-        )
-        return
-
-    guide_suffix = f"{usage_guide_line}\n\n" if usage_guide_line else ""
-    await context.bot.send_message(
-        chat_id=q.from_user.id,
-        text=(
-            "✅ *MUA HÀNG THÀNH CÔNG*\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            f"🧾 *Mã đơn:* `{order_id}`\n"
-            f"📦 *SP:* `{stock_code}`\n"
-            f"🔢 *SL:* *{qty_val}*\n"
-            f"⏱ *Thời gian:* {delivered_at}\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            f"🎁 *Thông tin nhận được:*\n{deliver_text_md}\n\n"
-            f"{guide_suffix}"
-            "🔐 Nếu là tài khoản, vui lòng *đổi mật khẩu ngay* sau khi đăng nhập."
-        ),
-        parse_mode="Markdown",
-        reply_markup=main_menu_keyboard(),
-    )
 
 async def cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE, order_id: str):
     q = update.callback_query
@@ -3786,16 +3680,21 @@ async def cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE, order
         return
 
     st = (order.get("status") or "PENDING").upper()
-    if st in ("DELIVERED", "CANCELLED", "EXPIRED"):
+    if st in ("PAID", "DELIVERY_PENDING", "DELIVERED", "CANCELLED", "EXPIRED"):
         await q.answer("Đơn không thể huỷ", show_alert=True)
         await context.bot.send_message(
             chat_id=user_id,
-            text="✅ Đơn đã kết thúc, không thể huỷ thêm." if st == "DELIVERED" else "ℹ️ Đơn đã huỷ / hết hạn trước đó.",
+            text="✅ Đơn đã thanh toán, không thể huỷ hoặc trả kho." if st in {"PAID", "DELIVERY_PENDING", "DELIVERED"} else "ℹ️ Đơn đã huỷ / hết hạn trước đó.",
             reply_markup=main_menu_keyboard(),
         )
         return
 
     await q.answer("Đang huỷ đơn…")
+    try:
+        released = await gs_call(release_hold_by_order, order_id, "CANCELLED")
+    except ValueError:
+        await context.bot.send_message(chat_id=user_id, text="Đơn đã thanh toán, không thể huỷ hoặc trả kho.")
+        return
     order_rownum = int(order["_rownum"]) if str(order.get("_rownum", "")).isdigit() else None
     qr_msg_id = (order.get("qr_msg_id") or "").strip()
     remove_jobs_by_prefix(context.application, f"countdown_{order_id}")
@@ -3828,7 +3727,6 @@ async def cancel_order(update: Update, context: ContextTypes.DEFAULT_TYPE, order
     await cleanup_check_miss_messages(context.bot, order_id)
 
     # 4) Trả kho (bước chậm hơn)
-    released = await gs_call(release_hold_by_order, order_id, "CANCELLED", order_rownum)
     _ = qr_deleted
 
     await context.bot.send_message(
@@ -3877,7 +3775,10 @@ async def release_overdue_pending_job(context: ContextTypes.DEFAULT_TYPE):
         if (created_dt + timedelta(seconds=ORDER_TTL_SECONDS)) > now_dt():
             continue
 
-        released = await gs_call(release_hold_by_order, order_id, "EXPIRED")
+        try:
+            released = await gs_call(release_hold_by_order, order_id, "EXPIRED")
+        except ValueError:
+            continue
         expired_count += 1
         released_total += released
         remove_jobs_by_prefix(context.application, f"countdown_{order_id}")
@@ -3957,7 +3858,10 @@ async def restore_pending_jobs(app: Application):
 
         # Nếu đã quá hạn -> trả kho + xoá QR + báo user (best effort)
         if remain <= 0:
-            released = await gs_call(release_hold_by_order, order_id, "EXPIRED")
+            try:
+                released = await gs_call(release_hold_by_order, order_id, "EXPIRED")
+            except ValueError:
+                continue
 
             # xoá tin QR nếu có
             if qr_msg_id_s.isdigit():

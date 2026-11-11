@@ -76,7 +76,7 @@ def _stock_code_from_name(name: str) -> str:
 
 def _revenue_period_stats(orders: List[Dict[str, Any]]) -> Dict[str, Dict[str, int]]:
     """Doanh thu theo đơn PAID/DELIVERED — nhóm hôm nay / tháng / năm (timezone shop)."""
-    paid_statuses = {"PAID", "DELIVERED"}
+    paid_statuses = {"PAID", "DELIVERY_PENDING", "DELIVERED"}
     buckets = {
         "today": {"orders": 0, "revenue": 0},
         "month": {"orders": 0, "revenue": 0},
@@ -132,7 +132,7 @@ def snapshot(limit: int = 100, pool_limit: int = 2000, reveal_secrets: bool = Fa
         uid = (order.get("user_id") or "").strip()
         total = shop.normalize_int(order.get("total"), 0)
         status_counts[status] = status_counts.get(status, 0) + 1
-        if status in ("PAID", "DELIVERED"):
+        if status in ("PAID", "DELIVERY_PENDING", "DELIVERED"):
             revenue += total
             if uid:
                 user_stats.setdefault(uid, {"orders": 0, "spent": 0})
@@ -441,9 +441,24 @@ def update_order(order_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
     payload = {k: v for k, v in updates.items() if k in allowed}
     if not payload:
         raise ValueError("No allowed updates")
+    current = shop.get_order_sheet(order_id)
+    if not current:
+        raise ValueError("Không tìm thấy đơn")
+    before = current.get("status", "").upper()
+    requested = str(payload.get("status", before)).upper()
+    if requested not in {"PENDING", "PAID", "DELIVERY_PENDING", "DELIVERED", "CANCELLED", "EXPIRED"}:
+        raise ValueError("Trạng thái đơn không hợp lệ")
+    if before in {"PAID", "DELIVERY_PENDING", "DELIVERED"} and requested in {"PENDING", "CANCELLED", "EXPIRED"}:
+        raise ValueError("Không thể huỷ hoặc mở lại đơn đã thanh toán")
+    if requested == "DELIVERED" and before != "DELIVERED":
+        raise ValueError("Chỉ đánh dấu đã giao khi hệ thống gửi hàng thành công. Đặt PAID để thử giao.")
+    if requested in {"CANCELLED", "EXPIRED"}:
+        shop.release_hold_by_order_sheet(order_id, requested)
+    if "status" in payload:
+        payload["status"] = requested
     shop.set_order_fields_sheet(order_id, payload)
     st = (payload.get("status") or "").strip().upper()
-    if st in ("PAID", "DELIVERED", "CANCELLED", "EXPIRED"):
+    if st in ("PAID", "DELIVERY_PENDING", "DELIVERED", "CANCELLED", "EXPIRED"):
         row = shop.get_order_sheet(order_id)
         if row:
             evt_map = {"DELIVERED": "delivered", "CANCELLED": "cancelled", "EXPIRED": "expired", "PAID": "paid"}
@@ -500,6 +515,10 @@ def run_backup() -> Dict[str, Any]:
 
     manager = BackupManager(gsheet_id=gsheet_id, gsvc_json=gsvc_json, backup_dir=backup_dir)
     files = manager.backup_all_sheets(compress=True)
+    if not files:
+        raise RuntimeError("Backup is empty")
+    folder = os.getenv("BACKUP_DRIVE_FOLDER_ID", "1mjOAK0R5A99KfGDfymC9Cy0s77WdGJ9v").strip()
+    remote = manager.upload_verified_archive(files, folder) if folder else None
     keep_days = int(os.getenv("BACKUP_KEEP_DAYS", "14"))
     try:
         deleted = manager.cleanup_old_backups(keep_days=keep_days)
@@ -512,4 +531,5 @@ def run_backup() -> Dict[str, Any]:
         "count": len(files),
         "cleaned_up": deleted,
         "keep_days": keep_days,
+        "remote": remote,
     }
