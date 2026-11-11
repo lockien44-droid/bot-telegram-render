@@ -108,9 +108,9 @@ export default function App() {
         setMessage("Đang tải dữ liệu...");
       }
       try {
-        const next = await adminApi<AdminSnapshot>("/admin/api/snapshot?limit=300&pool_limit=20000&reveal_secrets=1", key);
+        const next = await adminApi<AdminSnapshot>("/admin/api/snapshot?limit=300&pool_limit=20000&reveal_secrets=0", key);
         setData(next);
-        setMessage(`Cập nhật lúc ${next.generated_at} (${next.timezone})`);
+        setMessage(`Đã cập nhật lúc ${next.generated_at.split(" ")[1] || next.generated_at}`);
         await fetchNotifications(key);
       } catch (err) {
         if (!options.silent) {
@@ -248,10 +248,11 @@ export default function App() {
             }}
             onMarkNotificationsRead={markAllNotificationsRead}
             onOpenRevenue={() => setSection("revenue")}
+            onOpenReviews={() => setSection("payment_reviews")}
           />
         );
       case "payment_reviews":
-        return <PaymentReviews adminKey={adminKey} />;
+        return <PaymentReviews adminKey={adminKey} onOpenOrder={orderId => { setOrderPreset({ orderId, nonce: Date.now() }); setSection("orders"); }} />;
       case "revenue":
         return <Revenue data={data} />;
       case "notifications":
@@ -281,19 +282,20 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-screen bg-slate-50 overflow-hidden">
+    <div className="flex h-screen bg-[#f6f8fa] overflow-hidden">
       <Toaster richColors position="top-right" />
       <Sidebar
         active={section}
         notifyAlerts={unreadCount}
+        reviewAlerts={data?.summary.review_count || 0}
         onChange={setSection}
         onLogout={handleLogout}
       />
-      <main className="flex-1 overflow-y-auto">
-        <div className="max-w-7xl mx-auto px-4 py-6 pt-16 md:pt-6">
-          <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <main className="flex-1 min-w-0 overflow-y-auto">
+        <div className="max-w-7xl mx-auto px-4 sm:px-7 py-6 pt-16 md:pt-7">
+          <div className="mb-6 flex items-center justify-between gap-3">
             <div>
-              <h1 className="text-xl font-semibold tracking-tight">VM STORE</h1>
+              <p className="text-xs sm:text-sm font-semibold text-slate-700">VM STORE <span className="mx-2 font-normal text-slate-300">/</span> {NAV_ITEMS.find(item => item.id === section)?.label}</p>
               <p className="text-xs text-muted-foreground">{message || "Sẵn sàng quản lý bot bán hàng"}</p>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -308,24 +310,11 @@ export default function App() {
                   {unreadCount} thông báo mới
                 </Button>
               )}
-              <Button size="sm" variant="outline" className="gap-2" onClick={() => refresh()} disabled={loading}>
+              <Button size="sm" variant="outline" className="gap-2" onClick={() => refresh().catch(() => undefined)} disabled={loading}>
                 <RefreshCw size={15} className={loading ? "animate-spin" : ""} />
                 Làm mới
               </Button>
             </div>
-          </div>
-          <div className="mb-4 md:hidden">
-            <select
-              className="w-full h-11 rounded-md border border-border bg-white px-3 text-sm font-medium shadow-sm"
-              value={section}
-              onChange={(event) => setSection(event.target.value as AdminSection)}
-            >
-              {NAV_ITEMS.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.label}
-                </option>
-              ))}
-            </select>
           </div>
           {renderSection()}
         </div>

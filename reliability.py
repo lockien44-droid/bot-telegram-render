@@ -100,6 +100,10 @@ class EventInbox:
             text = str(payload.get("order_id") or payload.get("description") or payload.get("content") or "")
             match = re.search(r"ORD[0-9]{14}[A-Z0-9]{4}", text.upper())
             item["order_id"] = match.group(0) if match else ""
+            amount = payload.get("transferAmount")
+            if isinstance(amount, (int, float)) and 0 <= amount < 10**15:
+                item["received_amount"] = amount
+            item["transaction_date"] = str(payload.get("transactionDate") or "")
             result.append(item)
         return result
 

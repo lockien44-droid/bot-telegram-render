@@ -22,14 +22,14 @@ export function AdminLogin({ onLogin }: AdminLoginProps) {
     try {
       await onLogin(password.trim());
     } catch (err) {
-      setError(err instanceof Error ? "Sai mật khẩu hoặc backend chưa sẵn sàng." : "Không đăng nhập được.");
+      setError(err instanceof Error ? err.message : "Không kết nối được máy chủ. Kiểm tra mạng và thử lại.");
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 to-emerald-50 px-4">
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 via-white to-emerald-50 px-5 py-10">
       <Card className="w-full max-w-sm shadow-xl border-white/70">
         <CardHeader className="text-center pb-2">
           <div className="flex justify-center mb-3">
@@ -38,7 +38,7 @@ export function AdminLogin({ onLogin }: AdminLoginProps) {
             </div>
           </div>
           <CardTitle className="text-xl">VM STORE</CardTitle>
-          <p className="text-muted-foreground text-sm">Nhập ADMIN_PASSWORD để tiếp tục</p>
+          <p className="text-muted-foreground text-sm">Đăng nhập trang quản trị cửa hàng</p>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -48,7 +48,8 @@ export function AdminLogin({ onLogin }: AdminLoginProps) {
                 <Input
                   id="password"
                   type={showPassword ? "text" : "password"}
-                  placeholder="Nhập mật khẩu admin"
+                  placeholder="Nhập mật khẩu quản trị"
+                  autoComplete="current-password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   className="pr-10"

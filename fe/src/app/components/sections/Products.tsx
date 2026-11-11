@@ -260,11 +260,11 @@ export function Products({ data, adminKey, refresh, embedded, onAddStock }: Prop
               <TableRow>
                 <TableHead>Tên sản phẩm</TableHead>
                 <TableHead>Danh mục</TableHead>
-                <TableHead>Stock Code</TableHead>
+                <TableHead>Mã sản phẩm</TableHead>
                 <TableHead className="text-right">Giá</TableHead>
-                <TableHead className="text-center">READY</TableHead>
-                <TableHead className="text-center">HELD</TableHead>
-                <TableHead className="text-center">SOLD</TableHead>
+                <TableHead className="text-center">Có sẵn</TableHead>
+                <TableHead className="text-center">Đang giữ</TableHead>
+                <TableHead className="text-center">Đã bán</TableHead>
                 <TableHead>Mô tả</TableHead>
                 <TableHead>Hướng dẫn</TableHead>
                 <TableHead className="text-center w-[88px]">Thao tác</TableHead>
@@ -372,7 +372,7 @@ export function Products({ data, adminKey, refresh, embedded, onAddStock }: Prop
               </div>
             </div>
             <div className="space-y-1"><Label>Tên sản phẩm</Label><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></div>
-            <div className="space-y-1"><Label>Stock Code</Label><Input value={form.stock_code} onChange={(e) => setForm({ ...form, stock_code: e.target.value.toUpperCase() })} placeholder="Bỏ trống để tự tạo theo tên sản phẩm" /></div>
+            <div className="space-y-1"><Label>Mã sản phẩm</Label><Input value={form.stock_code} onChange={(e) => setForm({ ...form, stock_code: e.target.value.toUpperCase() })} placeholder="Bỏ trống để tự tạo theo tên sản phẩm" /></div>
             <div className="space-y-1"><Label>Giá</Label><Input type="number" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} /></div>
             <div className="space-y-1"><Label>Mô tả</Label><Input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></div>
             <div className="space-y-1"><Label>Hướng dẫn sử dụng</Label><Textarea value={form.usage_guide} onChange={(e) => setForm({ ...form, usage_guide: e.target.value })} placeholder="Ví dụ: https://docs.google.com/document/d/..." /></div>

@@ -333,5 +333,42 @@ class BackupTests(unittest.TestCase):
             manager.gs_sheet.worksheet.return_value.update.assert_called_once_with(data, value_input_option="RAW")
 
 
+class AdminOrderSearchTests(unittest.TestCase):
+    def setUp(self):
+        self.sheet = Sheet(["order_id", "user_id", "stock_code", "qty", "total", "status", "created_at", "deliver_text"],
+                           [[f"OLD-{i:04}", "123", "GPT" if i % 2 else "OTHER", "1", "2000", "PENDING",
+                             f"2026-11-{i % 28 + 1:02} 12:00:00", "private-secret"] for i in range(450)])
+        for item in (patch.object(shop, "init_sheets"), patch.object(shop, "_ws_orders", self.sheet),
+                     patch.object(shop, "load_products", return_value=[{"stock_code": "GPT", "name": "ChatGPT"}])):
+            item.start()
+            self.addCleanup(item.stop)
+
+    def test_searches_entire_history_and_hides_credentials(self):
+        from admin_orders import search_orders
+        result = search_orders(query="OLD-0449")
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["items"][0]["order_id"], "OLD-0449")
+        self.assertNotIn("deliver_text", result["items"][0])
+        self.assertNotIn("private-secret", str(result))
+
+    def test_filters_date_product_and_paginates(self):
+        from admin_orders import search_orders
+        result = search_orders(stock_code="GPT", date_from="2026-11-10", date_to="2026-11-20", page_size=3)
+        self.assertGreater(result["total"], 3)
+        self.assertEqual(len(result["items"]), 3)
+        self.assertTrue(all(row["stock_code"] == "GPT" and "2026-11-10" <= row["created_at"][:10] <= "2026-11-20" for row in result["items"]))
+        second = search_orders(stock_code="GPT", date_from="2026-11-10", date_to="2026-11-20", page_size=3, page=2)
+        self.assertNotEqual(result["items"][0]["order_id"], second["items"][0]["order_id"])
+
+    def test_delivery_details_require_explicit_reveal(self):
+        from admin_orders import order_detail
+        self.assertNotIn("delivery_text", order_detail("OLD-0001"))
+        self.assertEqual(order_detail("OLD-0001", reveal=True)["delivery_text"], "private-secret")
+
+    def test_snapshot_hides_order_credentials_by_default(self):
+        from admin_services import snapshot
+        self.assertNotIn("private-secret", str(snapshot(reveal_secrets=False)))
+
+
 if __name__ == "__main__":
     unittest.main()

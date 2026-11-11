@@ -1,3 +1,4 @@
+import { statusLabel } from "../StatusBadge";
 import { useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Badge } from "../ui/badge";
@@ -61,7 +62,7 @@ export function Revenue({ data }: RevenueProps) {
           Doanh thu
         </h2>
         <p className="text-xs text-muted-foreground mt-1">
-          Đơn PAID / DELIVERED · {formatRevenueDateLabel()} · {data.timezone}. Bảng đơn theo snapshot (tối đa {allOrders.length} đơn mới nhất); tổng &quot;mọi thời&quot; lấy từ server.
+          Đơn đã thanh toán · {formatRevenueDateLabel()} · {data.timezone}. Danh sách gồm {allOrders.length} đơn gần nhất; tổng doanh thu được tính từ toàn bộ lịch sử.
         </p>
       </div>
 
@@ -157,7 +158,7 @@ function RevenueOrdersTable({ orders, emptyLabel }: { orders: AnyRow[]; emptyLab
     <Table className="min-w-[720px]">
       <TableHeader>
         <TableRow>
-          <TableHead>Order ID</TableHead>
+          <TableHead>Mã đơn</TableHead>
           <TableHead>Stock</TableHead>
           <TableHead className="text-right">Tổng tiền</TableHead>
           <TableHead className="text-center">Trạng thái</TableHead>
@@ -177,7 +178,7 @@ function RevenueOrdersTable({ orders, emptyLabel }: { orders: AnyRow[]; emptyLab
               <TableCell>{text(o.stock_code)}</TableCell>
               <TableCell className="text-right font-medium text-emerald-700">{money(o.total)}</TableCell>
               <TableCell className="text-center">
-                <Badge variant={status === "DELIVERED" ? "default" : "secondary"}>{status}</Badge>
+                <Badge variant={status === "DELIVERED" ? "default" : "secondary"}>{statusLabel(status)}</Badge>
               </TableCell>
               <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{paidAt}</TableCell>
               <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{text(o.created_at)}</TableCell>

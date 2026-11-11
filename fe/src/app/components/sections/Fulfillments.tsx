@@ -25,17 +25,17 @@ export function Fulfillments({ data }: Props) {
       </div>
       <div className="relative max-w-xs">
         <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
-        <Input className="pl-8" placeholder="Order ID / Item ID / Code" value={search} onChange={(e) => setSearch(e.target.value)} />
+        <Input className="pl-8" placeholder="Mã đơn / Mã hàng / Code" value={search} onChange={(e) => setSearch(e.target.value)} />
       </div>
       <Card className="shadow-sm">
         <CardContent className="p-0 overflow-x-auto">
           <Table className="min-w-[760px]">
             <TableHeader>
               <TableRow>
-                <TableHead>Order ID</TableHead>
-                <TableHead>Item ID</TableHead>
-                <TableHead>Stock Code</TableHead>
-                <TableHead>Delivered</TableHead>
+                <TableHead>Mã đơn</TableHead>
+                <TableHead>Mã hàng</TableHead>
+                <TableHead>Mã sản phẩm</TableHead>
+                <TableHead>Giao lúc</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>

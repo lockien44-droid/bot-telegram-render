@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from admin_auth import COOKIE, check_login, create_session, require_session
 from reliability import serialized
+from datetime import date
 from fastapi.staticfiles import StaticFiles
 
 from admin_services import (
@@ -466,7 +467,7 @@ def register_admin_routes(app: FastAPI) -> None:
     @app.get("/admin", response_class=HTMLResponse)
     async def admin_page():
         if os.path.exists(fe_index):
-            return FileResponse(fe_index)
+            return FileResponse(fe_index, headers={"Cache-Control": "no-cache, must-revalidate"})
         return ADMIN_HTML
 
     @app.post("/admin/api/login")
@@ -526,6 +527,45 @@ def register_admin_routes(app: FastAPI) -> None:
         data = await request.json()
         return await asyncio.to_thread(serialized(notifications_delete), data)
 
+    @app.get("/admin/api/inventory-details")
+    async def admin_inventory_details(request: Request):
+        require_admin(request)
+        from admin_orders import inventory_details
+        return await asyncio.to_thread(inventory_details)
+
+    @app.get("/admin/api/orders")
+    async def admin_orders(request: Request, q: str = "", status: str = "ALL", stock_code: str = "",
+                           date_from: date | None = None, date_to: date | None = None,
+                           page: int = 1, page_size: int = 20):
+        require_admin(request)
+        from admin_orders import search_orders
+        if date_from and date_to and date_from > date_to:
+            raise HTTPException(400, "Ngày bắt đầu phải trước ngày kết thúc")
+        return await asyncio.to_thread(search_orders, q, status.upper(), stock_code,
+                                       date_from.isoformat() if date_from else "", date_to.isoformat() if date_to else "", page, page_size)
+
+    @app.get("/admin/api/orders/{order_id}")
+    async def admin_order_detail(request: Request, order_id: str, reveal: bool = False):
+        require_admin(request)
+        from admin_orders import order_detail
+        result = await asyncio.to_thread(order_detail, order_id, reveal)
+        if not result:
+            raise HTTPException(404, "Không tìm thấy đơn")
+        return result
+
+    @app.post("/admin/api/orders/{order_id}/retry-delivery")
+    async def admin_retry_delivery(request: Request, order_id: str):
+        require_admin(request)
+        from admin_orders import order_detail
+        row = await asyncio.to_thread(order_detail, order_id)
+        if not row or row["status"] not in {"PAID", "DELIVERY_PENDING"}:
+            raise HTTPException(409, "Chỉ thử giao lại đơn đã thanh toán và chưa giao xong")
+        from operations import enqueue_event, inbox
+        key = await asyncio.to_thread(enqueue_event, "delivery", {"id": order_id, "order_id": order_id})
+        store = await asyncio.to_thread(inbox)
+        await asyncio.to_thread(store.retry, key)
+        return {"ok": True, "queued": True}
+
     @app.get("/admin/api/snapshot")
     async def admin_snapshot(
         request: Request,
@@ -534,7 +574,14 @@ def register_admin_routes(app: FastAPI) -> None:
         reveal_secrets: int = 0,
     ):
         require_admin(request)
-        return await asyncio.to_thread(serialized(snapshot), limit, pool_limit, bool(reveal_secrets))
+        result = await asyncio.to_thread(serialized(snapshot), limit, pool_limit, bool(reveal_secrets))
+        try:
+            from operations import inbox
+            store = await asyncio.to_thread(inbox)
+            result["summary"]["review_count"] = len(await asyncio.to_thread(store.reviews))
+        except Exception:
+            logger.warning("Review count unavailable")
+        return result
 
     @app.post("/admin/api/backup")
     async def admin_backup(request: Request):
@@ -602,7 +649,10 @@ def register_admin_routes(app: FastAPI) -> None:
     async def admin_release_order(request: Request):
         require_admin(request)
         data: Dict[str, Any] = await request.json()
-        return await asyncio.to_thread(serialized(release_order), data.get("order_id", ""), data.get("status", "EXPIRED"))
+        try:
+            return await asyncio.to_thread(serialized(release_order), data.get("order_id", ""), data.get("status", "EXPIRED"))
+        except ValueError as exc:
+            raise HTTPException(409, str(exc))
 
     @app.post("/admin/api/stock/release-held")
     async def admin_release_holds(request: Request):
@@ -633,7 +683,9 @@ def register_admin_routes(app: FastAPI) -> None:
         if not order_id:
             raise HTTPException(status_code=400, detail="order_id required")
         amount = int(data.get("amount") or 0)
-        tx_id = (data.get("tx_id") or f"manual-{order_id}").strip()
+        tx_id = str(data.get("tx_id") or "").strip()
+        if not tx_id:
+            raise HTTPException(400, "Nhập mã giao dịch ngân hàng đã kiểm tra")
         payload = {
             "transferType": "in",
             "description": f"BankAPINotify {order_id}",

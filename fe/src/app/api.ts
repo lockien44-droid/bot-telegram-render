@@ -15,6 +15,7 @@ export interface AdminSnapshot {
     };
     status_counts: Record<string, number>;
     users: number;
+    review_count?: number;
     stock_ready: number;
     stock_held: number;
     stock_sold: number;
@@ -46,14 +47,23 @@ export async function adminApi<T>(path: string, key: string, options: RequestIni
     "content-type": "application/json",
     ...(options.headers as Record<string, string> | undefined),
   };
-  const res = await fetch(path, { ...options, headers, credentials: "same-origin" });
+  let res: Response;
+  try { res = await fetch(path, { ...options, headers, credentials: "same-origin" }); }
+  catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw error;
+    throw new Error("Không kết nối được máy chủ. Kiểm tra mạng và thử lại.");
+  }
   if (res.status === 401) {
-    onUnauthorized?.();
-    throw new AdminUnauthorizedError();
+    if (path !== "/admin/api/login") onUnauthorized?.();
+    throw new AdminUnauthorizedError(path === "/admin/api/login" ? "Mật khẩu chưa đúng. Vui lòng kiểm tra lại." : "Phiên đăng nhập đã hết hạn.");
   }
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `HTTP ${res.status}`);
+    let detail = "";
+    try { const body = await res.json(); if (typeof body.detail === "string") detail = body.detail; } catch {}
+    if (res.status === 429) throw new Error("Bạn đã thử quá nhiều lần. Vui lòng thử lại sau 10 phút.");
+    if (res.status >= 500) throw new Error("Máy chủ đang bận hoặc chưa sẵn sàng. Vui lòng thử lại sau.");
+    if (res.status === 405) throw new Error("Giao diện đã cũ. Nhấn Ctrl + F5 để tải bản mới.");
+    throw new Error(detail || "Chưa thể thực hiện thao tác. Vui lòng kiểm tra và thử lại.");
   }
   return res.json();
 }

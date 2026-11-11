@@ -28,38 +28,36 @@ export const NAV_ITEMS: { id: AdminSection; label: string; icon: ReactNode }[] =
 interface SidebarProps {
   active: AdminSection;
   notifyAlerts?: number;
+  reviewAlerts?: number;
   onChange: (s: AdminSection) => void;
   onLogout: () => void;
 }
 
-export function Sidebar({ active, notifyAlerts = 0, onChange, onLogout }: SidebarProps) {
+export function Sidebar({ active, notifyAlerts = 0, reviewAlerts = 0, onChange, onLogout }: SidebarProps) {
   const [open, setOpen] = useState(false);
 
   const navContent = (
     <nav className="flex flex-col h-full">
-      <div className="px-4 py-4 border-b border-border">
-        <p className="text-sm font-semibold">VM STORE</p>
-        <p className="text-xs text-muted-foreground truncate">Admin Dashboard</p>
-      </div>
+      <div className="px-5 py-6 border-b border-slate-100 flex gap-3 items-center"><div className="h-10 w-10 rounded-xl bg-emerald-800 text-white flex items-center justify-center text-sm font-bold tracking-tight">VM</div><div><p className="text-sm font-semibold tracking-wide">VM STORE</p><p className="text-[11px] text-slate-400 mt-1">Quản trị cửa hàng</p></div></div>
 
-      <div className="flex-1 py-3 space-y-0.5 overflow-y-auto">
+      <div className="flex-1 px-3 py-5 space-y-1 overflow-y-auto">
         {NAV_ITEMS.map((item) => (
           <button
             key={item.id}
             onClick={() => { onChange(item.id); setOpen(false); }}
-            className={`w-full flex items-center gap-3 px-4 py-2.5 text-sm transition-colors ${
+            className={`w-full flex items-center gap-3 px-3 py-3 rounded-xl text-[13px] transition-colors ${
               active === item.id
-                ? "bg-emerald-600 text-white"
-                : "text-muted-foreground hover:bg-emerald-50 hover:text-emerald-700"
+                ? "bg-emerald-50 text-emerald-900 font-semibold"
+                : "text-slate-500 hover:bg-slate-50 hover:text-slate-900"
             }`}
           >
             {item.icon}
             <span className="flex-1 text-left">{item.label}</span>
-            {item.id === "notifications" && notifyAlerts > 0 && (
+            {((item.id === "notifications" && notifyAlerts > 0) || (item.id === "payment_reviews" && reviewAlerts > 0)) && (
               <span className={`min-w-[1.25rem] px-1.5 py-0.5 rounded-full text-xs font-semibold text-center ${
-                active === item.id ? "bg-white/25 text-white" : "bg-red-500 text-white"
+                active === item.id ? "bg-emerald-700 text-white" : "bg-amber-100 text-amber-800"
               }`}>
-                {notifyAlerts > 99 ? "99+" : notifyAlerts}
+                {(item.id === "payment_reviews" ? reviewAlerts : notifyAlerts) > 99 ? "99+" : (item.id === "payment_reviews" ? reviewAlerts : notifyAlerts)}
               </span>
             )}
           </button>
@@ -77,12 +75,12 @@ export function Sidebar({ active, notifyAlerts = 0, onChange, onLogout }: Sideba
 
   return (
     <>
-      <aside className="hidden md:flex flex-col w-56 bg-white border-r border-border flex-shrink-0 h-screen sticky top-0">
+      <aside className="hidden md:flex flex-col w-64 bg-white border-r border-border flex-shrink-0 h-screen sticky top-0">
         {navContent}
       </aside>
 
       <div className="md:hidden fixed top-3 left-3 z-50">
-        <Button variant="outline" size="icon" onClick={() => setOpen((v) => !v)}>
+        <Button variant="outline" size="icon" aria-label={open ? "Đóng menu" : "Mở menu"} aria-expanded={open} onClick={() => setOpen((v) => !v)}>
           {open ? <X size={18} /> : <Menu size={18} />}
         </Button>
       </div>

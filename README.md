@@ -106,4 +106,13 @@ Khoi phuc chi khi da kiem tra ban backup va co yeu cau ro rang; khong tu dong gh
 
 `python -m unittest test_reliability test_vietqr_local -v` chay kiem thu offline.
 `npm ci --prefix fe` va `npm run build --prefix fe` build dashboard.
-`/health` tra `release: reliability-v1.2` va kiem tra worker; `/ping` la kiem tra song don gian.
+`/health` tra `release: dashboard-v2` va kiem tra worker; `/ping` la kiem tra song don gian.
+
+
+## Dashboard v2
+
+Tong quan uu tien doanh thu, don cho thanh toan, cho giao va cac truong hop can xu ly.
+Trang Don hang tim toan bo lich su tren Sheets, phan trang 20 don, loc ngay/san pham/trang thai.
+Bang desktop gom cac cot chinh; tren dien thoai dung the don hang. Chi tai noi dung giao hang khi bam Xem thong tin.
+Doi soat thanh toan yeu cau ma giao dich ngan hang; thao tac huy/thu giao lai chi hien theo trang thai hop le.
+Nhap mat khau sai, bi gioi han dang nhap, mat ket noi va loi may chu co thong bao rieng.

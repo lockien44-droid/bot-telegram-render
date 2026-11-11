@@ -210,7 +210,9 @@ def snapshot(limit: int = 100, pool_limit: int = 2000, reveal_secrets: bool = Fa
     pool_out = pool[:pool_limit]
     deliveries_out = delivery_rows[:limit]
     fulfillments_out = fulfillments[:limit]
+    orders_out = orders[:limit]
     if not reveal_secrets:
+        orders_out = _redact_rows(orders_out)
         pool_out = _redact_rows(pool_out)
         deliveries_out = _redact_rows(deliveries_out)
         fulfillments_out = _redact_rows(fulfillments_out)
@@ -231,7 +233,7 @@ def snapshot(limit: int = 100, pool_limit: int = 2000, reveal_secrets: bool = Fa
             "stock_sold": sum(v.get("SOLD", 0) for v in stock_counts.values()),
         },
         "products": product_rows,
-        "orders": orders[:limit],
+        "orders": orders_out,
         "users": user_rows[:limit],
         "pool": pool_out,
         "reservations": reservations[:limit],

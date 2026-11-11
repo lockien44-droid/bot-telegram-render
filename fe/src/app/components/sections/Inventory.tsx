@@ -1,3 +1,4 @@
+import { statusLabel } from "../StatusBadge";
 import { useEffect, useMemo, useState } from "react";
 import { Card, CardContent } from "../ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
@@ -7,7 +8,7 @@ import { Badge } from "../ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { Textarea } from "../ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
-import { Warehouse, Plus, RotateCcw, ChevronDown, ChevronRight, LayoutGrid, List } from "lucide-react";
+import { Eye, EyeOff, Warehouse, Plus, RotateCcw, ChevronDown, ChevronRight, LayoutGrid, List } from "lucide-react";
 import { toast } from "sonner";
 import { adminApi, text, type AdminSnapshot, type AnyRow } from "../../api";
 
@@ -52,7 +53,17 @@ export function Inventory({ data, adminKey, refresh, preset, addStockPreset, emb
   const [expandedCodes, setExpandedCodes] = useState<Set<string>>(new Set());
   const [sectionTab, setSectionTab] = useState("view");
 
-  const pool = data?.pool || [];
+  const [revealedPool, setRevealedPool] = useState<AnyRow[] | null>(null);
+  const [revealing, setRevealing] = useState(false);
+  useEffect(() => { setRevealedPool(null); }, [data?.generated_at]);
+  async function toggleSecrets() {
+    if (revealedPool) { setRevealedPool(null); return; }
+    setRevealing(true);
+    try { const response = await adminApi<{ items: AnyRow[] }>("/admin/api/inventory-details", adminKey); setRevealedPool(response.items); }
+    catch { toast.error("Không tải được thông tin kho. Hãy thử lại."); }
+    finally { setRevealing(false); }
+  }
+  const pool = revealedPool || data?.pool || [];
   const productCodes = useMemo(
     () => {
       const fromProducts = (data?.products || []).map((p) => normalizeCode(p.stock_code));
@@ -132,7 +143,7 @@ export function Inventory({ data, adminKey, refresh, preset, addStockPreset, emb
     setAddCode(code);
     setFilterCode(code);
     setSectionTab("add");
-    toast.info(`Thêm stock cho ${code}`, { description: "Nhập mỗi dòng 1 account/secret rồi bấm Thêm vào kho." });
+    toast.info(`Nhập hàng cho ${code}`, { description: "Nhập mỗi dòng 1 account/secret rồi bấm Thêm vào kho." });
   }, [addStockPreset?.nonce, addStockPreset?.stockCode]);
 
   useEffect(() => {
@@ -178,7 +189,7 @@ export function Inventory({ data, adminKey, refresh, preset, addStockPreset, emb
         body: JSON.stringify({ order_id: releaseOrderId, status: "EXPIRED" }),
       });
       setReleaseOrderId("");
-      toast.success(`Đã trả ${result.released || 0} item về READY`);
+      toast.success(`Đã trả ${result.released || 0} hàng về kho có sẵn`);
       await refresh();
     } finally {
       setBusy(false);
@@ -186,14 +197,14 @@ export function Inventory({ data, adminKey, refresh, preset, addStockPreset, emb
   };
 
   const releaseHeldBulk = async (expiredOnly: boolean) => {
-    if (!expiredOnly && !window.confirm("Trả toàn bộ HELD về READY? Chỉ dùng khi chắc chắn các đơn này không cần giữ nữa.")) return;
+    if (!expiredOnly && !window.confirm("Trả toàn bộ hàng đang giữ về kho có sẵn? Chỉ dùng khi chắc chắn các đơn này không cần giữ nữa.")) return;
     setBusy(true);
     try {
       const result = await adminApi<{ released: number; orders: number }>("/admin/api/stock/release-held", adminKey, {
         method: "POST",
         body: JSON.stringify({ expired_only: expiredOnly, status: "EXPIRED" }),
       });
-      toast.success(`Đã trả ${result.released || 0} item từ ${result.orders || 0} đơn về READY`);
+      toast.success(`Đã trả ${result.released || 0} item từ ${result.orders || 0} đơn về kho có sẵn`);
       await refresh();
     } finally {
       setBusy(false);
@@ -204,11 +215,14 @@ export function Inventory({ data, adminKey, refresh, preset, addStockPreset, emb
     <div className="space-y-4">
       {!embedded && <h2 className="flex items-center gap-2"><Warehouse size={20} /> Kho hàng</h2>}
 
+      <div className="flex justify-end"><Button variant="outline" size="sm" onClick={() => void toggleSecrets()} disabled={revealing}>
+        {revealedPool ? <EyeOff size={15} /> : <Eye size={15} />}{revealing ? "Đang tải…" : revealedPool ? "Ẩn thông tin kho" : "Hiện thông tin kho"}
+      </Button></div>
       <div className="grid grid-cols-3 gap-3">
         {(["READY", "HELD", "SOLD"] as const).map((s) => (
           <Card key={s} className="shadow-sm">
             <CardContent className="p-4 flex items-center justify-between">
-              <span className="text-sm text-muted-foreground">{s}</span>
+              <span className="text-sm text-muted-foreground">{statusLabel(s)}</span>
               <Badge variant={s === "READY" ? "default" : s === "HELD" ? "secondary" : "outline"} className="text-base px-3">{counts[s]}</Badge>
             </CardContent>
           </Card>
@@ -218,8 +232,8 @@ export function Inventory({ data, adminKey, refresh, preset, addStockPreset, emb
       <Tabs value={sectionTab} onValueChange={setSectionTab}>
         <TabsList>
           <TabsTrigger value="view">Xem kho</TabsTrigger>
-          <TabsTrigger value="add">Thêm stock</TabsTrigger>
-          <TabsTrigger value="release">Trả HELD</TabsTrigger>
+          <TabsTrigger value="add">Nhập hàng</TabsTrigger>
+          <TabsTrigger value="release">Trả hàng đang giữ</TabsTrigger>
         </TabsList>
 
         <TabsContent value="view" className="space-y-3 pt-2">
@@ -228,15 +242,15 @@ export function Inventory({ data, adminKey, refresh, preset, addStockPreset, emb
               <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="ALL">Tất cả</SelectItem>
-                <SelectItem value="READY">READY</SelectItem>
-                <SelectItem value="HELD">HELD</SelectItem>
-                <SelectItem value="SOLD">SOLD</SelectItem>
+                <SelectItem value="READY">Có sẵn</SelectItem>
+                <SelectItem value="HELD">Đang giữ</SelectItem>
+                <SelectItem value="SOLD">Đã bán</SelectItem>
               </SelectContent>
             </Select>
             <Select value={filterCode} onValueChange={setFilterCode}>
               <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="ALL">Tất cả code</SelectItem>
+                <SelectItem value="ALL">Tất cả sản phẩm</SelectItem>
                 {productCodes.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
               </SelectContent>
             </Select>
@@ -271,7 +285,7 @@ export function Inventory({ data, adminKey, refresh, preset, addStockPreset, emb
             <div className="space-y-2">
               {groups.length === 0 && (
                 <Card className="shadow-sm">
-                  <CardContent className="py-10 text-center text-muted-foreground">Không có stock nào</CardContent>
+                  <CardContent className="py-10 text-center text-muted-foreground">Chưa có hàng trong kho</CardContent>
                 </Card>
               )}
               {groups.map((group) => {
@@ -299,9 +313,9 @@ export function Inventory({ data, adminKey, refresh, preset, addStockPreset, emb
                         </p>
                       </div>
                       <div className="flex flex-wrap gap-1.5 justify-end shrink-0">
-                        <Badge>{group.counts.READY} READY</Badge>
-                        {group.counts.HELD > 0 && <Badge variant="secondary">{group.counts.HELD} HELD</Badge>}
-                        {group.counts.SOLD > 0 && <Badge variant="outline">{group.counts.SOLD} SOLD</Badge>}
+                        <Badge>{group.counts.READY} có sẵn</Badge>
+                        {group.counts.HELD > 0 && <Badge variant="secondary">{group.counts.HELD} đang giữ</Badge>}
+                        {group.counts.SOLD > 0 && <Badge variant="outline">{group.counts.SOLD} đã bán</Badge>}
                       </div>
                     </button>
                     {open && (
@@ -347,14 +361,14 @@ export function Inventory({ data, adminKey, refresh, preset, addStockPreset, emb
               </p>
               <div className="flex flex-wrap gap-2">
                 <Button className="gap-2" variant="outline" onClick={() => releaseHeldBulk(true)} disabled={busy}>
-                  <RotateCcw size={15} /> Trả HELD quá hạn
+                  <RotateCcw size={15} /> Trả hàng đang giữ quá hạn
                 </Button>
                 <Button className="gap-2" variant="destructive" onClick={() => releaseHeldBulk(false)} disabled={busy}>
                   <RotateCcw size={15} /> Trả toàn bộ HELD
                 </Button>
               </div>
               <div className="border-t pt-3 space-y-2">
-                <p className="text-sm text-muted-foreground">Hoặc nhập riêng Order ID đang HELD để trả các item của đơn về READY.</p>
+                <p className="text-sm text-muted-foreground">Hoặc nhập riêng Order ID đang HELD để trả các item của đơn về kho có sẵn.</p>
                 <Input placeholder="ORD..." value={releaseOrderId} onChange={(e) => setReleaseOrderId(e.target.value)} />
                 <Button variant="outline" onClick={releaseHeld} disabled={busy || !releaseOrderId}>Trả Order ID này về READY</Button>
               </div>
@@ -373,7 +387,7 @@ function PoolItemsTable({ items, showStockCode }: { items: AnyRow[]; showStockCo
       <TableHeader>
         <TableRow>
           <TableHead>Item ID</TableHead>
-          {showStockCode && <TableHead>Stock Code</TableHead>}
+          {showStockCode && <TableHead>Mã sản phẩm</TableHead>}
           <TableHead>Secret</TableHead>
           <TableHead className="text-center">Status</TableHead>
           <TableHead>Hold Order</TableHead>
@@ -397,7 +411,7 @@ function PoolItemsTable({ items, showStockCode }: { items: AnyRow[]; showStockCo
         ))}
         {items.length === 0 && (
           <TableRow>
-            <TableCell colSpan={colSpan} className="text-center text-muted-foreground py-8">Không có stock nào</TableCell>
+            <TableCell colSpan={colSpan} className="text-center text-muted-foreground py-8">Chưa có hàng trong kho</TableCell>
           </TableRow>
         )}
       </TableBody>
@@ -406,5 +420,5 @@ function PoolItemsTable({ items, showStockCode }: { items: AnyRow[]; showStockCo
 }
 
 function StockBadge({ status }: { status: string }) {
-  return <Badge variant={status === "READY" ? "default" : status === "HELD" ? "secondary" : "outline"}>{status}</Badge>;
+  return <Badge variant={status === "READY" ? "default" : status === "HELD" ? "secondary" : "outline"}>{statusLabel(status)}</Badge>;
 }
