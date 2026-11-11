@@ -107,7 +107,7 @@ class EventInbox:
     def retry(self, event_id):
         for row in self.rows():
             if row["event_id"] == event_id and row["status"] in ("REVIEW", "RETRY"):
-                self.finish(row, "PENDING")
+                self.finish(row, "PENDING", row["error"])
                 return True
         return False
 

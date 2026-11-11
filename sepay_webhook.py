@@ -550,8 +550,12 @@ def _prepare_payment(payload):
         return None
     if not info["txn_id"]:
         raise ReviewRequired("Giao dịch thiếu mã định danh")
-    account = str(payload.get("accountNumber") or "").strip()
-    if account and account != os.getenv("BANK_NUMBER", "96247W4CBY").strip():
+    from bot_shop import PAYMENT_INFO
+    account = str(payload.get("accountNumber") or "").strip().upper()
+    sub_account = str(payload.get("subAccount") or "").strip().upper()
+    expected_account = PAYMENT_INFO["bank_number"].strip().upper()
+    # SePay reports BIDV's underlying account separately from the receiving VA.
+    if (account or sub_account) and expected_account not in {account, sub_account}:
         raise ReviewRequired("Giao dịch không thuộc tài khoản nhận tiền đã cấu hình")
     extracted = extract_order_id(info["description"])
     if not extracted:

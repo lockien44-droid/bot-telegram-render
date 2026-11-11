@@ -113,6 +113,27 @@ class PaymentTests(unittest.IsolatedAsyncioTestCase):
             await payment.process_payment(self.payload)
         self.assertEqual(self.status(), "PENDING")
 
+    async def test_bidv_virtual_account_matches_subaccount(self):
+        self.payload.update(accountNumber="123456789", subAccount="TESTVA123")
+        with patch.dict(shop.PAYMENT_INFO, {"bank_number": "TESTVA123"}), \
+             patch.object(payment, "send_delivery_message", new=AsyncMock(return_value=True)):
+            await payment.process_payment(self.payload)
+        self.assertEqual(self.status(), "DELIVERED")
+
+    async def test_other_virtual_account_is_rejected(self):
+        self.payload.update(accountNumber="123456789", subAccount="OTHER123")
+        with patch.dict(shop.PAYMENT_INFO, {"bank_number": "TESTVA123"}):
+            with self.assertRaises(ReviewRequired):
+                await payment.process_payment(self.payload)
+        self.assertEqual(self.status(), "PENDING")
+
+    async def test_main_account_still_matches_without_virtual_account(self):
+        self.payload.update(accountNumber="123456789", subAccount="")
+        with patch.dict(shop.PAYMENT_INFO, {"bank_number": "123456789"}), \
+             patch.object(payment, "send_delivery_message", new=AsyncMock(return_value=True)):
+            await payment.process_payment(self.payload)
+        self.assertEqual(self.status(), "DELIVERED")
+
     async def test_different_transaction_on_paid_order_is_reviewed(self):
         self.order.values[1][5] = "PAID"
         self.order.values[1][9] = "another-transaction"

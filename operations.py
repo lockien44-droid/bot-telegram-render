@@ -57,7 +57,8 @@ async def worker_once():
                     raise ReviewRequired("Unknown event kind")
             except ReviewRequired as exc:
                 await asyncio.to_thread(store.finish, event, "REVIEW", str(exc))
-                await alert_review(event, str(exc))
+                if event["error"] != str(exc):
+                    await alert_review(event, str(exc))
             except Exception as exc:
                 logger.exception("Event %s failed", event["event_id"])
                 # Exception messages can contain URLs/credentials: persist only the class.
