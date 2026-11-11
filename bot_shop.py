@@ -2299,8 +2299,11 @@ def qty_select_kb(pid: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("⬅️ Quay lại", callback_data=f"pdetail_back|{pid}")],
     ])
 
-def checkout_keyboard_pending(order_id: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
+def checkout_keyboard_pending(order_id: str, qr_url: str = "") -> InlineKeyboardMarkup:
+    rows = []
+    if qr_url:
+        rows.append([InlineKeyboardButton("📷 Mở mã QR thanh toán", url=qr_url)])
+    return InlineKeyboardMarkup(rows + [
         [
             InlineKeyboardButton("🔎 Kiểm tra thanh toán", callback_data=f"confirm|{order_id}"),
             InlineKeyboardButton("❌ Huỷ đơn", callback_data=f"cancel|{order_id}"),
@@ -3119,14 +3122,14 @@ async def countdown_job(context: ContextTypes.DEFAULT_TYPE):
         remain_seconds=remain,
     )
     qr_url = build_vietqr_image_url(order_id, normalize_int(order.get("total"), 0))
-    caption_with_link = caption + f"\n\n[Mở mã QR thanh toán]({qr_url})"
+    caption_with_link = caption
 
     await edit_checkout_message(
         bot=context.bot,
         chat_id=user_id,
         message_id=int(qr_msg_id),
         text=caption_with_link,
-        reply_markup=checkout_keyboard_pending(order_id),
+        reply_markup=checkout_keyboard_pending(order_id, qr_url),
         parse_mode="Markdown",
     )
 
@@ -3356,7 +3359,7 @@ async def checkout_flow(
                 photo=bio,
                 caption=caption,
                 parse_mode="Markdown",
-                reply_markup=checkout_keyboard_pending(order_id),
+                reply_markup=checkout_keyboard_pending(order_id, qr_url),
             )
         else:
             m = await context.bot.send_photo(
@@ -3364,23 +3367,22 @@ async def checkout_flow(
                 photo=qr_url,
                 caption=caption,
                 parse_mode="Markdown",
-                reply_markup=checkout_keyboard_pending(order_id),
+                reply_markup=checkout_keyboard_pending(order_id, qr_url),
             )
-
-        qr_msg_id = str(m.message_id)
-        await gs_call(set_order_fields, order_id, {"qr_msg_id": qr_msg_id})
 
     except Exception as e:
         logger.error("❌ send_photo failed for %s | qr_url=%s | err=%s", order_id, qr_url, e)
         m = await context.bot.send_message(
             chat_id=user_id,
-            text=caption + f"\n\n[Mở mã QR thanh toán]({qr_url})",
+            text=caption,
             parse_mode="Markdown",
-            reply_markup=checkout_keyboard_pending(order_id),
+            reply_markup=checkout_keyboard_pending(order_id, qr_url),
             disable_web_page_preview=True,
         )
-        qr_msg_id = str(m.message_id)
-        await gs_call(set_order_fields, order_id, {"qr_msg_id": qr_msg_id})
+
+    # A storage error must not send a second checkout after the photo was sent.
+    qr_msg_id = str(m.message_id)
+    await gs_call(set_order_fields, order_id, {"qr_msg_id": qr_msg_id})
 
     await schedule_ttl(context.application, user_id, order_id)
 
