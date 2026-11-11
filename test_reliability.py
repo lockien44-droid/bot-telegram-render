@@ -235,6 +235,12 @@ class InboxTests(unittest.TestCase):
 
 
 class AuthTests(unittest.TestCase):
+    def test_timezone_accepts_blank_and_whitespace_environment(self):
+        from reliability import local_now
+        for value in ("", "  ", " Asia/Ho_Chi_Minh "):
+            with patch.dict(os.environ, {"APP_TIMEZONE": value}):
+                self.assertEqual(local_now().utcoffset().total_seconds(), 7 * 3600)
+
     def test_signed_session_and_password_rotation(self):
         with patch.dict(os.environ, {"ADMIN_PASSWORD": "test-only-strong-password"}):
             token = admin_auth.create_session()

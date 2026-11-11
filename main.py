@@ -210,7 +210,7 @@ async def health():
 
     body = {
         "ok": not issues,
-        "release": "reliability-v1",
+        "release": "reliability-v1.1",
         "telegram": "webhook" if telegram_app else "polling",
         "ts": int(time.time()),
     }

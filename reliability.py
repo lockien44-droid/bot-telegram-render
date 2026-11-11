@@ -9,11 +9,18 @@ import json
 import re
 import threading
 import time
+import os
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import gspread
 from gspread.cell import Cell
 
 STORAGE_LOCK = threading.RLock()
+
+
+def local_now():
+    return datetime.now(ZoneInfo(os.getenv("APP_TIMEZONE", "").strip() or "Asia/Ho_Chi_Minh"))
 
 
 def serialized(fn):

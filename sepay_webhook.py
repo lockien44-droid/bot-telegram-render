@@ -6,8 +6,7 @@ import asyncio
 import logging
 import secrets
 from decimal import Decimal, InvalidOperation
-from reliability import serialized, ReviewRequired
-from zoneinfo import ZoneInfo
+from reliability import serialized, ReviewRequired, local_now
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -103,10 +102,10 @@ def is_expired(created_at: str) -> bool:
     dt = parse_dt(created_at)
     if not dt:
         return False
-    return (datetime.now(ZoneInfo(os.getenv("APP_TIMEZONE", "Asia/Ho_Chi_Minh"))).replace(tzinfo=None) - dt).total_seconds() > ORDER_TTL_SECONDS
+    return (local_now().replace(tzinfo=None) - dt).total_seconds() > ORDER_TTL_SECONDS
 
 def now_str() -> str:
-    return datetime.now(ZoneInfo(os.getenv("APP_TIMEZONE", "Asia/Ho_Chi_Minh"))).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+    return local_now().replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def verify_sepay_auth(request: Request) -> bool:

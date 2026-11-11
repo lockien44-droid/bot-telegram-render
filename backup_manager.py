@@ -11,13 +11,12 @@ import hashlib
 import secrets
 import zipfile
 from pathlib import Path
-from zoneinfo import ZoneInfo
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import gspread
 from google.oauth2.service_account import Credentials
 import logging
-from reliability import serialized
+from reliability import serialized, local_now
 
 
 class BackupManager:
@@ -147,7 +146,7 @@ class BackupManager:
                     raise ValueError("Backup file failed validation")
                 bundle.write(path, os.path.basename(path))
         content = archive.getvalue()
-        now = datetime.now(ZoneInfo(os.getenv("APP_TIMEZONE", "Asia/Ho_Chi_Minh")))
+        now = local_now()
         name = "vm-store-backup-" + now.strftime("%Y%m%d-%H%M%S") + ".zip"
         slots_file = Path(__file__).with_name("backup_slots.json")
         slots = json.loads(slots_file.read_text(encoding="utf-8")) if slots_file.exists() else {}

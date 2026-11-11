@@ -106,4 +106,4 @@ Khoi phuc chi khi da kiem tra ban backup va co yeu cau ro rang; khong tu dong gh
 
 `python -m unittest test_reliability test_vietqr_local -v` chay kiem thu offline.
 `npm ci --prefix fe` va `npm run build --prefix fe` build dashboard.
-`/health` tra `release: reliability-v1` va kiem tra worker; `/ping` la kiem tra song don gian.
+`/health` tra `release: reliability-v1.1` va kiem tra worker; `/ping` la kiem tra song don gian.
