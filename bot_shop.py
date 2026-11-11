@@ -642,18 +642,22 @@ async def fetch_sepay_tx_for_order(
 
 
 async def fetch_qr_bytes(url: str, timeout: int = 12) -> Optional[bytes]:
-    """Tải ảnh QR về bytes để tránh Telegram tự fetch URL (hay lỗi không hiện QR)."""
+    """Tải và kiểm tra ảnh QR trước khi upload lên Telegram."""
     def _dl() -> bytes:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.read()
+            data = resp.read()
+            # Dịch vụ có thể trả HTML/JSON lỗi với HTTP 200.
+            if not data.startswith((b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff")):
+                raise ValueError("QR provider returned a non-image response")
+            return data
 
-    try:
-        data = await asyncio.to_thread(_dl)
-        return data if data and len(data) > 100 else None
-    except Exception as e:
-        logger.warning("fetch_qr_bytes failed: %s", e)
-        return None
+    for attempt in range(2):
+        try:
+            return await asyncio.to_thread(_dl)
+        except Exception as e:
+            logger.warning("fetch_qr_bytes attempt %s failed: %s", attempt + 1, e)
+    return None
 
 def remaining_seconds(created_at: str, ttl_seconds: int) -> int:
     try:
@@ -678,9 +682,10 @@ def build_checkout_caption_with_countdown(
 ) -> str:
     _ = remain_seconds, unit_price
     ttl_text = format_order_ttl()
-    bank_acc = PAYMENT_INFO["bank_number"]
-    bank_code = PAYMENT_INFO["bank_code"].upper()
-    bank_owner = PAYMENT_INFO["bank_owner"]
+    bank_acc = escape_markdown(PAYMENT_INFO["bank_number"], version=1)
+    bank_code = escape_markdown(PAYMENT_INFO["bank_code"].upper(), version=1)
+    bank_owner = escape_markdown(PAYMENT_INFO["bank_owner"], version=1)
+    product_name = escape_markdown(product_name, version=1)
 
     pay_note = normalize_order_ref(order_id)
 
@@ -3099,7 +3104,7 @@ async def countdown_job(context: ContextTypes.DEFAULT_TYPE):
         remain_seconds=remain,
     )
     qr_url = build_vietqr_image_url(order_id, normalize_int(order.get("total"), 0))
-    caption_with_link = caption
+    caption_with_link = caption + f"\n\n[Mở mã QR thanh toán]({qr_url})"
 
     await edit_checkout_message(
         bot=context.bot,
@@ -3353,7 +3358,7 @@ async def checkout_flow(
         logger.error("❌ send_photo failed for %s | qr_url=%s | err=%s", order_id, qr_url, e)
         m = await context.bot.send_message(
             chat_id=user_id,
-            text=caption,
+            text=caption + f"\n\n[Mở mã QR thanh toán]({qr_url})",
             parse_mode="Markdown",
             reply_markup=checkout_keyboard_pending(order_id),
             disable_web_page_preview=True,
