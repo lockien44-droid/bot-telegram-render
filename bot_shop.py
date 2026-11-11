@@ -61,6 +61,7 @@ from custom_emojis import (
 )
 
 import httpx
+from vietqr_local import generate_png as generate_vietqr_png
 
 SHEETS_LOCK = asyncio.Lock()
 _CATALOG_LOCK = asyncio.Lock()
@@ -658,6 +659,20 @@ async def fetch_qr_bytes(url: str, timeout: int = 12) -> Optional[bytes]:
         except Exception as e:
             logger.warning("fetch_qr_bytes attempt %s failed: %s", attempt + 1, e)
     return None
+
+
+async def create_checkout_qr(order_id: str, amount: int, qr_url: str) -> Optional[bytes]:
+    """Generate locally first; keep the existing provider for other banks."""
+    try:
+        note = normalize_order_ref(PAYMENT_INFO["note_template"].format(order_id=order_id))
+        return await asyncio.to_thread(
+            generate_vietqr_png,
+            os.getenv("BANK_BIN", "").strip() or PAYMENT_INFO["bank_code"],
+            PAYMENT_INFO["bank_number"], amount, note,
+        )
+    except Exception:
+        logger.exception("Local QR generation failed for order %s; trying provider", order_id)
+        return await fetch_qr_bytes(qr_url, timeout=6)
 
 def remaining_seconds(created_at: str, ttl_seconds: int) -> int:
     try:
@@ -3307,7 +3322,7 @@ async def checkout_flow(
     except Exception:
         pass
 
-    qr_task = asyncio.create_task(fetch_qr_bytes(qr_url, timeout=6))
+    qr_task = asyncio.create_task(create_checkout_qr(order_id, total, qr_url))
 
     if edit_query:
         try:
@@ -3328,6 +3343,7 @@ async def checkout_flow(
     try:
         img_bytes = await qr_task
     except Exception:
+        logger.exception("Checkout QR task failed for order %s", order_id)
         img_bytes = None
 
     qr_msg_id = ""

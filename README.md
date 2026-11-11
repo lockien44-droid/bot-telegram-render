@@ -29,6 +29,10 @@ NOTE_TEMPLATE={order_id}
 
 `GOOGLE_JSON_CONTENT` la toan bo noi dung file Google service account JSON. Khong commit `.env` hoac `service_account.json`.
 
+QR thanh toan duoc tao truc tiep trong bot cho BIDV va MB/MBBANK, khong can tai anh tu VietQR.
+Voi ngan hang khac, dat `BANK_BIN` la ma BIN NAPAS 6 chu so de tao QR local;
+neu khong co BIN, bot se thu dich vu anh VietQR nhu truoc.
+
 ## Chay local
 
 ```bash
